@@ -1,0 +1,10 @@
+[package]
+name = "hg-ecs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+derive-where = "1.2.7"
+linkme = "0.3.31"
+rustc-hash = "2.1.0"
+thunderdome = "0.6.1"

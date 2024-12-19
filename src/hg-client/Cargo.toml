@@ -1,0 +1,8 @@
+[package]
+name = "hg-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hg-ecs = { version = "0.1.0", path = "../hg-ecs" }
+macroquad = "0.4.13"
