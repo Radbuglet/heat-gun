@@ -59,6 +59,16 @@ impl World {
         }
     }
 
+    pub fn single<T: Resource>(&mut self) -> *mut T {
+        let res = self
+            .resources
+            .entry(TypeId::of::<T::Cx>())
+            .or_insert_with(|| Rc::<ResourceValue<T>>::default());
+
+        // Okay because `ResourceValue<T>` is `repr(transparent)` around `T`
+        Rc::as_ptr(res) as *const T as *mut T
+    }
+
     pub fn bundle(&mut self) -> WorldBundle<'_> {
         // Invalidate all previous tokens.
         let prev_token = self.curr_origin;
@@ -187,6 +197,7 @@ impl<'a> Drop for WorldBundle<'a> {
 
 // ResourceValue
 #[derive(Default)]
+#[repr(transparent)]
 struct ResourceValue<T: Resource> {
     value: UnsafeCell<T>,
 }
@@ -234,17 +245,16 @@ pub use bind;
 // === Resource === //
 
 // Core trait
-pub type CxOf<R> = <R as Resource>::Cx;
-
-pub type AccessRef<'a, R> = (&'a WORLD, &'a CxOf<R>);
-pub type AccessMut<'a, R> = (&'a WORLD, &'a mut CxOf<R>);
+pub type AccessRes<R> = <R as Resource>::Cx;
+pub type AccessResRef<'a, R> = (&'a WORLD, &'a AccessRes<R>);
+pub type AccessResMut<'a, R> = (&'a WORLD, &'a mut AccessRes<R>);
 
 pub unsafe trait Resource: Sized + 'static + Default {
     type Cx: ContextItem<Item = AccessToken<Self>>;
 
     fn slot() -> &'static AtomicPtr<Self>;
 
-    fn fetch<'a>(cx: Bundle<AccessRef<'a, Self>>) -> &'a Self {
+    fn fetch<'a>(cx: Bundle<AccessResRef<'a, Self>>) -> &'a Self {
         let world = unpack!(cx => &WORLD);
         let token = unpack!(cx => &Self::Cx);
 
@@ -253,7 +263,7 @@ pub unsafe trait Resource: Sized + 'static + Default {
         unsafe { &*Self::slot().load(Relaxed) }
     }
 
-    fn fetch_mut<'a>(cx: Bundle<AccessMut<'a, Self>>) -> &'a mut Self {
+    fn fetch_mut<'a>(cx: Bundle<AccessResMut<'a, Self>>) -> &'a mut Self {
         let world = unpack!(cx => &WORLD);
         let token = unpack!(cx => &Self::Cx);
 

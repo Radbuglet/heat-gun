@@ -1,28 +1,34 @@
 #![feature(context_injection)]
 
-use hg_ecs::{bind, resource, Resource, World, WORLD};
+use hg_ecs::{bind, component, obj::Obj, World};
 
 fn main() {
     let mut world = World::new();
 
     bind!(world);
 
-    dbg!(MyThing::fetch());
-    MyThing::fetch_mut().a += 1;
-    dbg!(MyThing::fetch());
+    let mut root = Obj::new(Player {
+        name: "whee".to_string(),
+        child: None,
+    });
 
-    {
-        bind!(WORLD);
+    root.child = Some(Obj::new(Player {
+        name: "woo".to_string(),
+        child: None,
+    }));
 
-        MyThing::fetch_mut().a += 1;
-    }
+    dbg!(root.debug());
+    dbg!(root);
 
-    dbg!(MyThing::fetch());
+    root.child.unwrap().destroy();
+
+    dbg!(root.debug());
 }
 
-#[derive(Debug, Default)]
-pub struct MyThing {
-    a: u32,
+#[derive(Debug)]
+pub struct Player {
+    name: String,
+    child: Option<Obj<Player>>,
 }
 
-resource!(MyThing);
+component!(Player);
