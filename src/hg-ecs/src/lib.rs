@@ -1,13 +1,9 @@
 #![feature(context_injection)]
 
-mod component;
-pub use component::*;
+pub mod world;
 
-mod entity;
-pub use entity::*;
+pub mod prelude {
+    pub use crate::world::{bind, resource, AccessMut, AccessRef, CxOf, Resource, World, WORLD};
+}
 
-mod object;
-pub use object::*;
-
-mod world;
-pub use world::*;
+pub use prelude::*;

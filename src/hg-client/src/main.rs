@@ -1,40 +1,28 @@
-#![feature(arbitrary_self_types)]
 #![feature(context_injection)]
 
-use actor::Player;
-use hg_ecs::{bind_world, World, ROOT};
+use hg_ecs::{bind, resource, Resource, World, WORLD};
 
-use macroquad::prelude::*;
-
-mod actor;
-
-#[macroquad::main("Heat Gun")]
-async fn main() {
+fn main() {
     let mut world = World::new();
 
-    init_world(&mut world);
+    bind!(world);
 
-    while !is_quit_requested() {
-        tick_world(&mut world);
-        next_frame().await;
+    dbg!(MyThing::fetch());
+    MyThing::fetch_mut().a += 1;
+    dbg!(MyThing::fetch());
+
+    {
+        bind!(WORLD);
+
+        MyThing::fetch_mut().a += 1;
     }
+
+    dbg!(MyThing::fetch());
 }
 
-fn init_world(world: &mut World) {
-    bind_world!(*world);
-
-    let mut player = ROOT.add(Player::new(ROOT));
-    player.pos = Vec2::new(100., 100.);
+#[derive(Debug, Default)]
+pub struct MyThing {
+    a: u32,
 }
 
-fn tick_world(world: &mut World) {
-    bind_world!(*world);
-
-    let player = ROOT.get::<Player>();
-
-    // Update phase
-    player.update();
-
-    // Render phase
-    player.render();
-}
+resource!(MyThing);
