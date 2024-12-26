@@ -1,7 +1,6 @@
 use std::{
     any::{type_name, TypeId},
     cell::UnsafeCell,
-    collections::hash_map::Entry,
     context::{
         unpack, Bundle, BundleItemRequest, BundleItemResponse, BundleItemSetFor, ContextItem,
     },
@@ -16,8 +15,8 @@ use std::{
     },
 };
 
+use hg_utils::hash::{hash_map::Entry, FxHashMap};
 use linkme::distributed_slice;
-use rustc_hash::FxHashMap;
 
 // === World === //
 

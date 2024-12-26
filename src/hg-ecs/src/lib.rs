@@ -1,5 +1,7 @@
 #![feature(context_injection)]
 
+pub mod archetype;
+pub mod entity;
 pub mod obj;
 pub mod world;
 

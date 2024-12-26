@@ -86,7 +86,7 @@ impl<T: Component> fmt::Debug for Obj<T> {
 
             if let Some(alive) = arena.get(self.index) {
                 f.debug_tuple("Obj")
-                    .field(&format_args!("{index:x}"))
+                    .field(&format_args!("0x{index:x}"))
                     .field(alive)
                     .finish()
             } else {
@@ -99,13 +99,13 @@ impl<T: Component> fmt::Debug for Obj<T> {
                 }
 
                 f.debug_tuple("Obj")
-                    .field(&format_args!("{index:x}"))
+                    .field(&format_args!("0x{index:x}"))
                     .field(&Dead)
                     .finish()
             }
         } else {
             f.debug_tuple("Obj")
-                .field(&format_args!("{index:x}"))
+                .field(&format_args!("0x{index:x}"))
                 .finish()
         }
     }
