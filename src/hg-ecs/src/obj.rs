@@ -9,9 +9,10 @@ use std::{
 
 use derive_where::derive_where;
 
+use hg_utils::hash::FxHashMap;
 use thunderdome::{Arena, Index};
 
-use crate::{AccessRes, Resource, World, WORLD};
+use crate::{entity::Entity, AccessRes, Resource, World, WORLD};
 
 // === Component === //
 
@@ -20,16 +21,22 @@ pub type AccessCompRef<'a, T> = (&'a WORLD, &'a AccessComp<T>);
 pub type AccessCompMut<'a, T> = (&'a WORLD, &'a mut AccessComp<T>);
 
 pub trait Component: 'static + Sized + fmt::Debug {
-    type Arena: Resource + DerefMut<Target = Arena<Self>>;
+    type Arena: Resource + DerefMut<Target = Storage<Self>>;
+}
+
+#[derive(Debug)]
+#[derive_where(Default)]
+pub struct Storage<T> {
+    pub arena: Arena<T>,
+    pub entity_map: FxHashMap<Entity, Index>,
 }
 
 #[doc(hidden)]
 pub mod component_internals {
     pub use {
-        super::Component,
+        super::{Component, Storage},
         crate::resource,
         std::ops::{Deref, DerefMut},
-        thunderdome::Arena,
     };
 }
 
@@ -38,26 +45,26 @@ macro_rules! component {
     ($($ty:ty)*) => {$(
         const _: () = {
             #[derive(Default)]
-            pub struct Arena($crate::obj::component_internals::Arena<$ty>);
+            pub struct Storage($crate::obj::component_internals::Storage<$ty>);
 
-            impl $crate::obj::component_internals::Deref for Arena {
-                type Target = $crate::obj::component_internals::Arena<$ty>;
+            impl $crate::obj::component_internals::Deref for Storage {
+                type Target = $crate::obj::component_internals::Storage<$ty>;
 
                 fn deref(&self) -> &Self::Target {
                     &self.0
                 }
             }
 
-            impl $crate::obj::component_internals::DerefMut for Arena {
+            impl $crate::obj::component_internals::DerefMut for Storage {
                 fn deref_mut(&mut self) -> &mut Self::Target {
                     &mut self.0
                 }
             }
 
-            $crate::obj::component_internals::resource!(Arena);
+            $crate::obj::component_internals::resource!(Storage);
 
             impl $crate::obj::component_internals::Component for $ty {
-                type Arena = Arena;
+                type Arena = Storage;
             }
         };
     )*};
@@ -82,9 +89,9 @@ impl<T: Component> fmt::Debug for Obj<T> {
         let index = self.index.to_bits();
 
         if let Some(mut world) = FMT_WORLD.get() {
-            let arena = unsafe { &*world.as_mut().single::<T::Arena>() };
+            let storage = unsafe { &*world.as_mut().single::<T::Arena>() };
 
-            if let Some(alive) = arena.get(self.index) {
+            if let Some(alive) = storage.arena.get(self.index) {
                 f.debug_tuple("Obj")
                     .field(&format_args!("0x{index:x}"))
                     .field(alive)
@@ -112,20 +119,20 @@ impl<T: Component> fmt::Debug for Obj<T> {
 }
 
 impl<T: Component> Obj<T> {
-    pub fn new(value: T, cx: Bundle<AccessCompMut<'_, T>>) -> Self {
-        let arena = <T::Arena>::fetch_mut(pack!(cx));
-
+    pub fn from_raw(index: Index) -> Self {
         Self {
             _ty: PhantomData,
-            index: arena.insert(value),
+            index,
         }
     }
 
-    pub fn destroy(self, cx: Bundle<AccessCompMut<'_, T>>) {
-        <T::Arena>::fetch_mut(pack!(cx)).remove(self.index);
+    pub fn raw(self) -> Index {
+        self.index
     }
 
     pub fn debug<'a>(self, cx: Bundle<&'a mut WORLD>) -> ObjFmt<'a, T> {
+        // FIXME: Increment `curr_origin` to avoid soundness bug
+
         ObjFmt {
             _ty: PhantomData,
             world: NonNull::from(unpack!(cx => &mut WORLD)),
@@ -139,7 +146,7 @@ impl<'i, 'o, T: Component> DerefCx<'i, 'o> for Obj<T> {
     type TargetCx = T;
 
     fn deref_cx(&'i self, cx: Bundle<Self::ContextRef>) -> &'o Self::TargetCx {
-        &<T::Arena>::fetch(pack!(cx))[self.index]
+        &<T::Arena>::fetch(pack!(cx)).arena[self.index]
     }
 }
 
@@ -147,7 +154,7 @@ impl<'i, 'o, T: Component> DerefCxMut<'i, 'o> for Obj<T> {
     type ContextMut = AccessCompMut<'o, T>;
 
     fn deref_cx_mut(&'i mut self, cx: Bundle<Self::ContextMut>) -> &'o mut Self::TargetCx {
-        &mut <T::Arena>::fetch_mut(pack!(cx))[self.index]
+        &mut <T::Arena>::fetch_mut(pack!(cx)).arena[self.index]
     }
 }
 

@@ -4,21 +4,34 @@ use hg_utils::{
     hash::{hash_map::RawEntryMut, FxHashMap, IterHashExt},
     iter::{MergeIter, RemoveIter},
 };
+use index_vec::{define_index_type, IndexVec};
 use rustc_hash::FxBuildHasher;
-use thunderdome::{Arena, Index};
+
+use crate::obj::Component;
+
+define_index_type! {
+    pub struct ArchetypeId = usize;
+}
+
+impl ArchetypeId {
+    pub const EMPTY: Self = Self { _raw: 0 };
+}
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ComponentId(TypeId);
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct ArchetypeId(Index);
+impl ComponentId {
+    pub fn of<T: Component>() -> Self {
+        Self(TypeId::of::<T>())
+    }
+}
 
 #[derive(Debug)]
 pub struct ArchetypeStore {
-    arena: Arena<ArchetypeData>,
+    arena: IndexVec<ArchetypeId, ArchetypeData>,
     comp_buf: Vec<ComponentId>,
     map: FxHashMap<ArchetypeKey, ArchetypeId>,
-    root: ArchetypeId,
+    comp_arches: FxHashMap<ComponentId, Vec<ArchetypeId>>,
 }
 
 #[derive(Debug)]
@@ -42,12 +55,12 @@ impl Default for ArchetypeStore {
 
 impl ArchetypeStore {
     pub fn new() -> Self {
-        let mut arena = Arena::new();
-        let root = ArchetypeId(arena.insert(ArchetypeData {
+        let mut arena = IndexVec::new();
+        arena.push(ArchetypeData {
             comps: 0..0,
             pos: FxHashMap::default(),
             neg: FxHashMap::default(),
-        }));
+        });
 
         let mut map = FxHashMap::default();
         let hash = FxBuildHasher.hash_one_iter([] as [ComponentId; 0]);
@@ -60,7 +73,7 @@ impl ArchetypeStore {
         entry.insert_with_hasher(
             hash,
             ArchetypeKey { hash, comps: 0..0 },
-            root,
+            ArchetypeId::EMPTY,
             |_| unreachable!(),
         );
 
@@ -68,16 +81,12 @@ impl ArchetypeStore {
             arena,
             comp_buf: Vec::new(),
             map,
-            root,
+            comp_arches: FxHashMap::default(),
         }
     }
 
-    pub fn root(&self) -> ArchetypeId {
-        self.root
-    }
-
     fn lookup<M: LookupMode>(&mut self, base: ArchetypeId, with: ComponentId) -> ArchetypeId {
-        let base_data = &self.arena[base.0];
+        let base_data = &self.arena[base];
 
         // Attempt to find a cached extension/de-extension of an existing archetype.
         if let Some(&shortcut) = ternary(M::POLARITY, &base_data.pos, &base_data.neg).get(&with) {
@@ -104,7 +113,7 @@ impl ArchetypeStore {
             RawEntryMut::Occupied(entry) => {
                 let target = *entry.get();
 
-                let base_data = &mut self.arena[base.0];
+                let base_data = &mut self.arena[base];
                 ternary(M::POLARITY, &mut base_data.pos, &mut base_data.neg).insert(with, target);
 
                 return target;
@@ -113,11 +122,14 @@ impl ArchetypeStore {
         };
 
         // Otherwise, we have to create an entirely new archetype.
+
+        // Create the `comps` range.
         let range_start = self.comp_buf.len();
-        let comps = comps.collect::<Vec<_>>();
-        self.comp_buf.extend(comps);
+        let comps_vec = comps.collect::<Vec<_>>();
+        self.comp_buf.extend(comps_vec.iter().copied());
         let comps = range_start..self.comp_buf.len();
 
+        // Create the `new` archetype with an appropriate back-ref to its original archetype.
         let mut new_data = ArchetypeData {
             comps: comps.clone(),
             pos: FxHashMap::default(),
@@ -126,12 +138,19 @@ impl ArchetypeStore {
 
         ternary(!M::POLARITY, &mut new_data.pos, &mut new_data.neg).insert(with, base);
 
-        let new = ArchetypeId(self.arena.insert(new_data));
+        let new = self.arena.push(new_data);
 
-        let base_data = &mut self.arena[base.0];
+        // Update `base` to contain a shortcut to this new archetype.
+        let base_data = &mut self.arena[base];
         ternary(M::POLARITY, &mut base_data.pos, &mut base_data.neg).insert(with, new);
 
+        // Update the `map`.
         entry.insert_with_hasher(hash, ArchetypeKey { hash, comps }, new, |entry| entry.hash);
+
+        // Update `comp_arches`.
+        for &comp in &comps_vec {
+            self.comp_arches.entry(comp).or_default().push(new);
+        }
 
         new
     }
@@ -142,6 +161,10 @@ impl ArchetypeStore {
 
     pub fn lookup_remove(&mut self, base: ArchetypeId, without: ComponentId) -> ArchetypeId {
         self.lookup::<RemoveLookupMode>(base, without)
+    }
+
+    pub fn archetypes_with(&self, id: ComponentId) -> &[ArchetypeId] {
+        self.comp_arches.get(&id).map_or(&[], |v| v)
     }
 }
 
