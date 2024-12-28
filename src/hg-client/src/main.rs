@@ -67,11 +67,17 @@ impl Deref for RenderHandler {
 component!(RenderHandler);
 
 pub fn spawn_player() -> Entity {
-    let player = Entity::new()
+    let player = Entity::new(Entity::root())
         .with(Pos::default())
         .with(Vel::default())
         .with(UpdateHandler(sys_player_update))
         .with(RenderHandler(sys_player_render));
+
+    let foo = Entity::new(player).with(DropInspector("foo"));
+    let bar = Entity::new(foo).with(DropInspector("bar"));
+
+    foo.destroy_now();
+    dbg!(bar.is_alive());
 
     player.get::<Pos>().0 = Vec2::new(100., 500.);
     player.get::<Vel>().0 = Vec2::new(100., -200.);
@@ -92,9 +98,18 @@ fn sys_player_update(world: &mut World, entity: Entity) {
 fn sys_player_render(world: &mut World, entity: Entity) {
     bind!(world);
 
-    dbg!(entity.debug());
-
     let pos = entity.get::<Pos>().0;
 
     draw_rectangle(pos.x - 10., pos.y - 10., 20., 20., RED);
+}
+
+#[derive(Debug)]
+pub struct DropInspector(pub &'static str);
+
+component!(DropInspector);
+
+impl Drop for DropInspector {
+    fn drop(&mut self) {
+        eprintln!("Dropped: {}", self.0);
+    }
 }

@@ -5,6 +5,7 @@ use std::{
 };
 
 use hg_utils::hash::hash_map::Entry;
+use smallvec::SmallVec;
 use thunderdome::{Arena, Index};
 
 use crate::{
@@ -17,15 +18,32 @@ use crate::{
 
 // === Store === //
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct EntityStore {
     entities: Arena<EntityInfo>,
     archetypes: ArchetypeStore,
+    root: Entity,
 }
 
 #[derive(Debug)]
 struct EntityInfo {
     archetype: ArchetypeId,
+    index_in_parent: usize,
+    parent: Option<Entity>,
+    children: SmallVec<[Entity; 2]>,
+}
+
+impl Default for EntityStore {
+    fn default() -> Self {
+        let mut store = Self {
+            entities: Default::default(),
+            archetypes: Default::default(),
+            root: Entity::DANGLING,
+        };
+
+        store.root = Entity::new_root(&mut store);
+        store
+    }
 }
 
 resource!(EntityStore);
@@ -66,16 +84,64 @@ impl fmt::Debug for Entity {
 }
 
 impl Entity {
-    pub fn new() -> Self {
-        let index = EntityStore::fetch_mut().entities.insert(EntityInfo {
+    pub const DANGLING: Self = Self(Index::DANGLING);
+
+    pub fn new(parent: Entity) -> Self {
+        let node = Self::new_root(EntityStore::fetch_mut());
+        node.set_parent(Some(parent));
+        node
+    }
+
+    pub(crate) fn new_root(store: &mut EntityStore) -> Self {
+        let index = store.entities.insert(EntityInfo {
             archetype: ArchetypeId::EMPTY,
+            index_in_parent: 0,
+            parent: None,
+            children: SmallVec::new(),
         });
 
         Self(index)
     }
 
+    pub fn root() -> Entity {
+        EntityStore::fetch().root
+    }
+
     pub fn is_alive(self) -> bool {
         EntityStore::fetch().entities.contains(self.0)
+    }
+
+    pub fn parent(self) -> Option<Entity> {
+        EntityStore::fetch().entities[self.0].parent
+    }
+
+    pub fn set_parent(self, parent: Option<Entity>) {
+        let store = EntityStore::fetch_mut();
+
+        // Remove from old parent
+        let me = &mut store.entities[self.0];
+        let old_parent = me.parent.take();
+        let old_index = me.index_in_parent;
+
+        if let Some(parent) = old_parent {
+            let parent = &mut store.entities[parent.0];
+
+            parent.children.swap_remove(old_index);
+            if let Some(&moved) = parent.children.get(old_index) {
+                store.entities[moved.0].index_in_parent = old_index;
+            }
+        }
+
+        // Add to new parent
+        if let Some(parent) = parent {
+            let (me, parent_val) = store.entities.get2_mut(self.0, parent.0);
+            let me = me.unwrap();
+            let parent_val = parent_val.unwrap();
+
+            me.index_in_parent = parent_val.children.len();
+            me.parent = Some(parent);
+            parent_val.children.push(self);
+        }
     }
 
     pub fn add<T: Component>(
@@ -184,6 +250,10 @@ impl Entity {
             let comp = EntityStore::fetch(pack!(cx)).archetypes.components(arch)[i];
 
             (comp.remove)(unpack!(cx => &mut WORLD), self);
+        }
+
+        for child in entity.children {
+            child.destroy_now(pack!(cx));
         }
     }
 
