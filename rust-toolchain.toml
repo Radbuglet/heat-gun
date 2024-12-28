@@ -1,2 +1,5 @@
 [toolchain]
+
+# Repo: https://github.com/radbuglet/rust
+# Hash: 034a429e50007faaa57fd8757544a8d1abf39c42
 channel = "stage1"
