@@ -1,10 +1,8 @@
 use std::{
-    cell::Cell,
-    context::{pack, unpack, Bundle, DerefCx, DerefCxMut},
+    context::{pack, Bundle, DerefCx, DerefCxMut},
     fmt,
     marker::PhantomData,
     ops::DerefMut,
-    ptr::NonNull,
 };
 
 use derive_where::derive_where;
@@ -12,7 +10,10 @@ use derive_where::derive_where;
 use hg_utils::hash::FxHashMap;
 use thunderdome::{Arena, Index};
 
-use crate::{AccessRes, Entity, Resource, World, WORLD};
+use crate::{
+    world::{ImmutableWorld, WorldFmt},
+    AccessRes, Entity, Resource, WORLD,
+};
 
 // === Component === //
 
@@ -74,10 +75,6 @@ pub use component;
 
 // === Obj === //
 
-thread_local! {
-    static FMT_WORLD: Cell<Option<NonNull<World>>> = const { Cell::new(None) };
-}
-
 #[derive_where(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Obj<T: Component> {
     _ty: PhantomData<fn(T) -> T>,
@@ -88,33 +85,35 @@ impl<T: Component> fmt::Debug for Obj<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let index = self.index.to_bits();
 
-        if let Some(mut world) = FMT_WORLD.get() {
-            let storage = unsafe { &*world.as_mut().single::<T::Arena>() };
+        ImmutableWorld::try_use_tls(|world| {
+            if let Some(world) = world {
+                let storage = world.read::<T::Arena>();
 
-            if let Some(alive) = storage.arena.get(self.index) {
-                f.debug_tuple("Obj")
-                    .field(&format_args!("0x{index:x}"))
-                    .field(alive)
-                    .finish()
-            } else {
-                struct Dead;
+                if let Some(alive) = storage.arena.get(self.index) {
+                    f.debug_tuple("Obj")
+                        .field(&format_args!("0x{index:x}"))
+                        .field(alive)
+                        .finish()
+                } else {
+                    struct Dead;
 
-                impl fmt::Debug for Dead {
-                    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                        f.write_str("<dead>")
+                    impl fmt::Debug for Dead {
+                        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                            f.write_str("<dead>")
+                        }
                     }
-                }
 
+                    f.debug_tuple("Obj")
+                        .field(&format_args!("0x{index:x}"))
+                        .field(&Dead)
+                        .finish()
+                }
+            } else {
                 f.debug_tuple("Obj")
                     .field(&format_args!("0x{index:x}"))
-                    .field(&Dead)
                     .finish()
             }
-        } else {
-            f.debug_tuple("Obj")
-                .field(&format_args!("0x{index:x}"))
-                .finish()
-        }
+        })
     }
 }
 
@@ -130,14 +129,8 @@ impl<T: Component> Obj<T> {
         self.index
     }
 
-    pub fn debug<'a>(self, cx: Bundle<&'a mut WORLD>) -> ObjFmt<'a, T> {
-        // FIXME: Increment `curr_origin` to avoid soundness bug
-
-        ObjFmt {
-            _ty: PhantomData,
-            world: NonNull::from(unpack!(cx => &mut WORLD)),
-            obj: self,
-        }
+    pub fn debug<'a>(self, cx: Bundle<&'a mut WORLD>) -> WorldFmt<'a, Self> {
+        WorldFmt::new(self, pack!(cx))
     }
 }
 
@@ -155,23 +148,5 @@ impl<'i, 'o, T: Component> DerefCxMut<'i, 'o> for Obj<T> {
 
     fn deref_cx_mut(&'i mut self, cx: Bundle<Self::ContextMut>) -> &'o mut Self::TargetCx {
         &mut <T::Arena>::fetch_mut(pack!(cx)).arena[self.index]
-    }
-}
-
-pub struct ObjFmt<'a, T: Component> {
-    _ty: PhantomData<&'a mut World>,
-    world: NonNull<World>,
-    obj: Obj<T>,
-}
-
-impl<'a, T: Component> fmt::Debug for ObjFmt<'a, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _restore = scopeguard::guard(FMT_WORLD.get(), |old| {
-            FMT_WORLD.set(old);
-        });
-
-        FMT_WORLD.set(Some(self.world));
-
-        self.obj.fmt(f)
     }
 }

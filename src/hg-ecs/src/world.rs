@@ -1,6 +1,6 @@
 use std::{
     any::{type_name, TypeId},
-    cell::UnsafeCell,
+    cell::{Cell, UnsafeCell},
     context::{
         unpack, Bundle, BundleItemRequest, BundleItemResponse, BundleItemSetFor, ContextItem,
     },
@@ -68,7 +68,7 @@ impl World {
         Rc::as_ptr(res) as *const T as *mut T
     }
 
-    pub fn bundle(&mut self) -> WorldBundle<'_> {
+    pub fn reborrow(&mut self) -> WorldReborrow<'_> {
         // Invalidate all previous tokens.
         let prev_token = self.curr_origin;
         self.curr_origin = self
@@ -76,7 +76,7 @@ impl World {
             .checked_add(1)
             .expect("too many nested bundle creations");
 
-        WorldBundle {
+        WorldReborrow {
             world: self,
             prev_origin: prev_token,
         }
@@ -90,13 +90,17 @@ impl Drop for World {
 }
 
 #[derive(Debug)]
-pub struct WorldBundle<'a> {
+pub struct WorldReborrow<'a> {
     world: &'a mut World,
     prev_origin: NonZeroUsize,
 }
 
-impl WorldBundle<'_> {
-    pub fn get<'a, T>(&'a mut self) -> Bundle<T>
+impl WorldReborrow<'_> {
+    pub fn immutable<'a>(&'a self) -> ImmutableWorld<'a> {
+        ImmutableWorld(unsafe { &*(self.world as *const World as *const UnsafeCell<World>) })
+    }
+
+    pub fn bundle<'a, T>(&'a mut self) -> Bundle<T>
     where
         T: BundleItemSetFor<'a>,
     {
@@ -178,7 +182,7 @@ impl WorldBundle<'_> {
     }
 }
 
-impl<'a> Drop for WorldBundle<'a> {
+impl<'a> Drop for WorldReborrow<'a> {
     fn drop(&mut self) {
         // The `AccessToken`s we lend out can only live for as long as this `WorldBundle` instance
         // is alive. Hence, it is safe to restore the previous state and allow this current state to
@@ -191,6 +195,40 @@ impl<'a> Drop for WorldBundle<'a> {
         );
 
         self.world.curr_origin = self.prev_origin;
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct ImmutableWorld<'a>(&'a UnsafeCell<World>);
+
+impl<'a> ImmutableWorld<'a> {
+    thread_local! {
+        static TLS_WORLD: Cell<Option<NonNull<UnsafeCell<World>>>> = const { Cell::new(None) };
+    }
+
+    pub fn bind_tls<R>(self, f: impl FnOnce() -> R) -> R {
+        let _restore = scopeguard::guard(Self::TLS_WORLD.get(), |old| {
+            Self::TLS_WORLD.set(old);
+        });
+
+        Self::TLS_WORLD.set(Some(NonNull::from(self.0)));
+
+        f()
+    }
+
+    pub fn try_use_tls<R>(f: impl FnOnce(Option<ImmutableWorld<'_>>) -> R) -> R {
+        let world = Self::TLS_WORLD
+            .get()
+            .map(|world| ImmutableWorld(unsafe { world.as_ref() }));
+
+        f(world)
+    }
+
+    pub fn read<T: Resource>(self) -> &'a T {
+        unsafe {
+            let world = &mut *self.0.get();
+            &*world.single::<T>()
+        }
     }
 }
 
@@ -234,8 +272,8 @@ pub mod bind_internals {
 #[macro_export]
 macro_rules! bind {
     ($world:expr) => {
-        let mut cx = $world.bundle();
-        let static ..cx.get::<$crate::world::bind_internals::infer_bundle!('_)>();
+        let mut cx = $world.reborrow();
+        let static ..cx.bundle::<$crate::world::bind_internals::infer_bundle!('_)>();
     };
 }
 
@@ -368,5 +406,35 @@ impl<T: Resource> AccessToken<T> {
 
     pub fn id(&self) -> NonZeroUsize {
         unsafe { NonZeroUsize::new_unchecked(self as *const Self as usize) }
+    }
+}
+
+// === WorldFmt === //
+
+pub type WorldFmtRef<'a, T> = WorldFmt<'a, &'a T>;
+
+pub struct WorldFmt<'a, T> {
+    pub world: WorldReborrow<'a>,
+    pub value: T,
+}
+
+impl<'a, T> WorldFmt<'a, T> {
+    pub fn new(value: T, cx: Bundle<&'a mut WORLD>) -> Self {
+        Self {
+            world: unpack!(cx => &mut WORLD).reborrow(),
+            value,
+        }
+    }
+}
+
+impl<'a, T: fmt::Debug> fmt::Debug for WorldFmt<'a, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.world.immutable().bind_tls(|| self.value.fmt(f))
+    }
+}
+
+impl<'a, T: fmt::Display> fmt::Display for WorldFmt<'a, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.world.immutable().bind_tls(|| self.value.fmt(f))
     }
 }

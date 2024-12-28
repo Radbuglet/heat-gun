@@ -25,9 +25,9 @@ impl ComponentId {
         impl<T: Component> Helper<T> {
             const INFO: &'static ComponentInfo = &ComponentInfo {
                 remove: |world, entity| {
-                    let mut world = world.bundle();
+                    let mut world = world.reborrow();
 
-                    entity.remove_from_storage::<T>(world.get());
+                    entity.remove_from_storage::<T>(world.bundle());
                 },
             };
         }
