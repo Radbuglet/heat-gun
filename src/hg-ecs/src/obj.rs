@@ -12,7 +12,7 @@ use derive_where::derive_where;
 use hg_utils::hash::FxHashMap;
 use thunderdome::{Arena, Index};
 
-use crate::{entity::Entity, AccessRes, Resource, World, WORLD};
+use crate::{AccessRes, Entity, Resource, World, WORLD};
 
 // === Component === //
 

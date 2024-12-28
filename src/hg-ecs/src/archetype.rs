@@ -1,4 +1,8 @@
-use std::{any::TypeId, ops::Range};
+use std::{
+    cmp::Ordering,
+    hash::Hash,
+    ops::{Deref, Range},
+};
 
 use hg_utils::{
     hash::{hash_map::RawEntryMut, FxHashMap, IterHashExt},
@@ -7,7 +11,71 @@ use hg_utils::{
 use index_vec::{define_index_type, IndexVec};
 use rustc_hash::FxBuildHasher;
 
-use crate::obj::Component;
+use crate::{obj::Component, Entity, World};
+
+// === ComponentId === //
+
+#[derive(Debug, Copy, Clone)]
+pub struct ComponentId(&'static ComponentInfo);
+
+impl ComponentId {
+    pub fn of<T: Component>() -> Self {
+        struct Helper<T>(T);
+
+        impl<T: Component> Helper<T> {
+            const INFO: &'static ComponentInfo = &ComponentInfo {
+                remove: |world, entity| {
+                    let mut world = world.bundle();
+
+                    entity.remove_from_storage::<T>(world.get());
+                },
+            };
+        }
+
+        Self(Helper::<T>::INFO)
+    }
+}
+
+impl Deref for ComponentId {
+    type Target = ComponentInfo;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+impl Hash for ComponentId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (self.0 as *const ComponentInfo).hash(state);
+    }
+}
+
+impl Eq for ComponentId {}
+
+impl PartialEq for ComponentId {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 as *const ComponentInfo == other.0 as *const ComponentInfo
+    }
+}
+
+impl Ord for ComponentId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.0 as *const ComponentInfo).cmp(&(other.0 as *const ComponentInfo))
+    }
+}
+
+impl PartialOrd for ComponentId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(&other))
+    }
+}
+
+#[derive(Debug)]
+pub struct ComponentInfo {
+    pub remove: fn(&mut World, Entity),
+}
+
+// === ArchetypeId === //
 
 define_index_type! {
     pub struct ArchetypeId = usize;
@@ -17,14 +85,7 @@ impl ArchetypeId {
     pub const EMPTY: Self = Self { _raw: 0 };
 }
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct ComponentId(TypeId);
-
-impl ComponentId {
-    pub fn of<T: Component>() -> Self {
-        Self(TypeId::of::<T>())
-    }
-}
+// === ArchetypeStore === //
 
 #[derive(Debug)]
 pub struct ArchetypeStore {
@@ -165,6 +226,11 @@ impl ArchetypeStore {
 
     pub fn archetypes_with(&self, id: ComponentId) -> &[ArchetypeId] {
         self.comp_arches.get(&id).map_or(&[], |v| v)
+    }
+
+    pub fn components(&self, id: ArchetypeId) -> &[ComponentId] {
+        let comps = self.arena[id].comps.clone();
+        &self.comp_buf[comps]
     }
 }
 

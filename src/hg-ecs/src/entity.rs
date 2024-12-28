@@ -1,6 +1,6 @@
 use std::{
     any::type_name,
-    context::{pack, Bundle},
+    context::{pack, unpack, Bundle},
 };
 
 use hg_utils::hash::hash_map::Entry;
@@ -8,8 +8,8 @@ use thunderdome::{Arena, Index};
 
 use crate::{
     archetype::{ArchetypeId, ArchetypeStore, ComponentId},
-    obj::{AccessComp, AccessCompRef, Component, Obj},
-    resource, AccessRes, Resource, WORLD,
+    obj::Component,
+    resource, AccessComp, AccessCompMut, AccessCompRef, AccessRes, Obj, Resource, WORLD,
 };
 
 // === Store === //
@@ -17,13 +17,11 @@ use crate::{
 #[derive(Debug, Default)]
 pub struct EntityStore {
     entities: Arena<EntityInfo>,
-    condemned: Vec<Entity>,
     archetypes: ArchetypeStore,
 }
 
 #[derive(Debug)]
 struct EntityInfo {
-    condemned: bool,
     archetype: ArchetypeId,
 }
 
@@ -37,7 +35,6 @@ pub struct Entity(Index);
 impl Entity {
     pub fn new() -> Self {
         let index = EntityStore::fetch_mut().entities.insert(EntityInfo {
-            condemned: false,
             archetype: ArchetypeId::EMPTY,
         });
 
@@ -106,18 +103,50 @@ impl Entity {
         })
     }
 
-    pub fn destroy(self) {
-        let store = EntityStore::fetch_mut();
+    pub fn remove_now<T: Component>(
+        self,
+        cx: Bundle<(&WORLD, &mut AccessRes<EntityStore>, &mut AccessComp<T>)>,
+    ) -> Option<T> {
+        let store = EntityStore::fetch_mut(pack!(cx));
 
-        let Some(info) = store.entities.get_mut(self.0) else {
+        let Some(entity) = store.entities.get_mut(self.0) else {
+            return None;
+        };
+
+        entity.archetype = store
+            .archetypes
+            .lookup_remove(entity.archetype, ComponentId::of::<T>());
+
+        self.remove_from_storage(pack!(cx))
+    }
+
+    pub(crate) fn remove_from_storage<T: Component>(
+        self,
+        cx: Bundle<AccessCompMut<'_, T>>,
+    ) -> Option<T> {
+        let storage = <T::Arena>::fetch_mut(pack!(cx));
+
+        let Some(obj) = storage.entity_map.remove(&self) else {
+            return None;
+        };
+
+        Some(storage.arena.remove(obj).unwrap())
+    }
+
+    pub fn destroy_now(self, cx: Bundle<(&mut WORLD, &mut AccessRes<EntityStore>)>) {
+        let store = EntityStore::fetch_mut(pack!(cx));
+
+        let Some(entity) = store.entities.remove(self.0) else {
             return;
         };
 
-        if info.condemned {
-            return;
-        }
+        let arch = entity.archetype;
+        let arch_len = store.archetypes.components(arch).len();
 
-        info.condemned = true;
-        store.condemned.push(self);
+        for i in 0..arch_len {
+            let comp = EntityStore::fetch(pack!(cx)).archetypes.components(arch)[i];
+
+            (comp.remove)(unpack!(cx => &mut WORLD), self);
+        }
     }
 }

@@ -2,7 +2,7 @@
 
 use std::ops::Deref;
 
-use hg_ecs::{bind, component, entity::Entity, World, WORLD};
+use hg_ecs::{bind, component, Entity, World, WORLD};
 use macroquad::{color::RED, input::is_quit_requested, math::Vec2, shapes::draw_rectangle, time::get_frame_time, window::next_frame};
 
 #[macroquad::main("Heat Gun")]
