@@ -1,4 +1,6 @@
+use core::fmt;
 use std::{
+    any::type_name,
     cmp::Ordering,
     hash::Hash,
     ops::{Deref, Range},
@@ -11,7 +13,7 @@ use hg_utils::{
 use index_vec::{define_index_type, IndexVec};
 use rustc_hash::FxBuildHasher;
 
-use crate::{obj::Component, Entity, World};
+use crate::{obj::Component, world::ImmutableWorld, Entity, World};
 
 // === ComponentId === //
 
@@ -24,6 +26,14 @@ impl ComponentId {
 
         impl<T: Component> Helper<T> {
             const INFO: &'static ComponentInfo = &ComponentInfo {
+                debug_fmt: |world, entity, fmt| {
+                    let storage = world.read::<T::Arena>();
+
+                    let idx = storage.entity_map[&entity];
+                    let val = &storage.arena[idx];
+
+                    fmt.field(type_name::<T>(), val);
+                },
                 remove: |world, entity| {
                     let mut world = world.reborrow();
 
@@ -72,6 +82,7 @@ impl PartialOrd for ComponentId {
 
 #[derive(Debug)]
 pub struct ComponentInfo {
+    pub debug_fmt: fn(ImmutableWorld, Entity, &mut fmt::DebugStruct<'_, '_>),
     pub remove: fn(&mut World, Entity),
 }
 

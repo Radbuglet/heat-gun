@@ -92,6 +92,8 @@ fn sys_player_update(world: &mut World, entity: Entity) {
 fn sys_player_render(world: &mut World, entity: Entity) {
     bind!(world);
 
+    dbg!(entity.debug());
+
     let pos = entity.get::<Pos>().0;
 
     draw_rectangle(pos.x - 10., pos.y - 10., 20., 20., RED);

@@ -1,3 +1,4 @@
+use core::fmt;
 use std::{
     any::type_name,
     context::{pack, unpack, Bundle},
@@ -9,7 +10,9 @@ use thunderdome::{Arena, Index};
 use crate::{
     archetype::{ArchetypeId, ArchetypeStore, ComponentId},
     obj::Component,
-    resource, AccessComp, AccessCompMut, AccessCompRef, AccessRes, Obj, Resource, WORLD,
+    resource,
+    world::{ImmutableWorld, WorldFmt},
+    AccessComp, AccessCompMut, AccessCompRef, AccessRes, Obj, Resource, WORLD,
 };
 
 // === Store === //
@@ -29,8 +32,38 @@ resource!(EntityStore);
 
 // === Entity === //
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Entity(Index);
+
+impl fmt::Debug for Entity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        ImmutableWorld::try_use_tls(|world| {
+            if let Some(world) = world {
+                let store = world.read::<EntityStore>();
+
+                let mut f = f.debug_struct("Entity");
+
+                f.field("id", &format_args!("0x{:x}", self.0.to_bits()));
+
+                if let Some(entity) = store.entities.get(self.0) {
+                    let comps = store.archetypes.components(entity.archetype);
+
+                    for comp in comps {
+                        (comp.debug_fmt)(world, *self, &mut f);
+                    }
+                } else {
+                    f.field("is_alive", &false);
+                }
+
+                f.finish()
+            } else {
+                f.debug_struct("Entity")
+                    .field("id", &format_args!("0x{:x}", self.0.to_bits()))
+                    .finish()
+            }
+        })
+    }
+}
 
 impl Entity {
     pub fn new() -> Self {
@@ -39,6 +72,10 @@ impl Entity {
         });
 
         Self(index)
+    }
+
+    pub fn is_alive(self) -> bool {
+        EntityStore::fetch().entities.contains(self.0)
     }
 
     pub fn add<T: Component>(
@@ -148,5 +185,9 @@ impl Entity {
 
             (comp.remove)(unpack!(cx => &mut WORLD), self);
         }
+    }
+
+    pub fn debug<'a>(self, cx: Bundle<&'a mut WORLD>) -> WorldFmt<'a, Self> {
+        WorldFmt::new(self, pack!(cx))
     }
 }
