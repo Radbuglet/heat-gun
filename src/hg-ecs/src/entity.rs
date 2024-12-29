@@ -1,44 +1,90 @@
-use core::fmt;
 use std::{
     any::type_name,
-    context::{pack, unpack, Bundle},
+    context::{pack, unpack, Bundle, DerefCx, DerefCxMut},
+    fmt,
+    marker::PhantomData,
+    ops::DerefMut,
+    rc::Rc,
 };
 
-use hg_utils::hash::hash_map::Entry;
-use smallvec::SmallVec;
+use derive_where::derive_where;
+use hg_utils::hash::{hash_map::Entry, FxHashMap, FxHashSet};
+use thin_vec::ThinVec;
 use thunderdome::{Arena, Index};
 
 use crate::{
     archetype::{ArchetypeId, ArchetypeStore, ComponentId},
-    obj::Component,
-    resource,
+    bind, resource,
     world::{ImmutableWorld, WorldFmt},
-    AccessComp, AccessCompMut, AccessCompRef, AccessRes, Obj, Resource, WORLD,
+    AccessRes, Resource, World, WORLD,
 };
 
 // === Store === //
 
 #[derive(Debug)]
 pub struct EntityStore {
-    entities: Arena<EntityInfo>,
-    archetypes: ArchetypeStore,
+    /// The root entity of the game. This is the only entity not to have a parent.
     root: Entity,
+
+    /// An arena of all live entities.
+    entities: Arena<EntityInfo>,
+
+    /// Tracks all component archetypes in use.
+    archetypes: ArchetypeStore,
+
+    /// A snapshot of members of each archetype since the last `flush`.
+    ///
+    /// This `Rc` is cloned while the storage is being iterated and is otherwise exclusive.
+    archetype_members: Rc<ArchetypeMembers>,
+
+    /// Maps entities that have been reshaped to their original archetype. Destroyed entities are
+    /// included in the `dead_entities` map instead.
+    ///
+    /// This is only used to patch up `archetype_members` during a `flush`.
+    reshaped_entities: FxHashMap<Entity, ArchetypeId>,
+
+    /// The set of original archetypes and position therein of entities destroyed through
+    /// `destroy_now`. Entities in the empty archetype are not included.
+    ///
+    /// This is only used to patch up `archetype_members` during a `flush`.
+    dead_entities: FxHashSet<(ArchetypeId, u32)>,
 }
 
 #[derive(Debug)]
 struct EntityInfo {
+    /// The archetype describing the set of components the entity actively owns. This accounts for
+    /// changes by `add` and `remove_now` but not queued operations such as `remove`, which defers
+    /// its call to `remove_now` until before reshapes are applied.
     archetype: ArchetypeId,
-    index_in_parent: usize,
+
+    /// The index of the entity in its pre-`flush` archetype.
+    index_in_archetype: u32,
+
+    /// The index of the node in its parent's `children` vector.
+    index_in_parent: u32,
+
+    /// The parent of the entity. This is guaranteed to be alive.
     parent: Option<Entity>,
-    children: SmallVec<[Entity; 2]>,
+
+    /// The entity's set of children. These are guaranteed to be alive.
+    children: ThinVec<Entity>,
+}
+
+#[derive(Debug, Default)]
+struct ArchetypeMembers {
+    index_members: FxHashMap<ArchetypeId, Vec<Entity>>,
+    comp_members: FxHashMap<(ArchetypeId, ComponentId), Vec<Index>>,
 }
 
 impl Default for EntityStore {
     fn default() -> Self {
         let mut store = Self {
-            entities: Default::default(),
-            archetypes: Default::default(),
             root: Entity::DANGLING,
+            entities: Arena::new(),
+            archetypes: ArchetypeStore::new(),
+            archetype_members: Rc::default(),
+            reshaped_entities: FxHashMap::default(),
+            dead_entities: FxHashSet::default(),
         };
 
         store.root = Entity::new_root(&mut store);
@@ -96,8 +142,9 @@ impl Entity {
         let index = store.entities.insert(EntityInfo {
             archetype: ArchetypeId::EMPTY,
             index_in_parent: 0,
+            index_in_archetype: 0,
             parent: None,
-            children: SmallVec::new(),
+            children: ThinVec::new(),
         });
 
         Self(index)
@@ -126,8 +173,8 @@ impl Entity {
         if let Some(parent) = old_parent {
             let parent = &mut store.entities[parent.0];
 
-            parent.children.swap_remove(old_index);
-            if let Some(&moved) = parent.children.get(old_index) {
+            parent.children.swap_remove(old_index as usize);
+            if let Some(&moved) = parent.children.get(old_index as usize) {
                 store.entities[moved.0].index_in_parent = old_index;
             }
         }
@@ -138,10 +185,26 @@ impl Entity {
             let me = me.unwrap();
             let parent_val = parent_val.unwrap();
 
-            me.index_in_parent = parent_val.children.len();
             me.parent = Some(parent);
+            me.index_in_parent = u32::try_from(parent_val.children.len()).unwrap_or_else(|_| {
+                panic!(
+                    "{parent:?} has too many children (more than {}??)",
+                    u32::MAX
+                )
+            });
+
             parent_val.children.push(self);
         }
+    }
+
+    fn mark_shape_dirty_before_update(
+        reshaped_entities: &mut FxHashMap<Entity, ArchetypeId>,
+        entity: Entity,
+        entity_info: &EntityInfo,
+    ) {
+        reshaped_entities
+            .entry(entity)
+            .or_insert(entity_info.archetype);
     }
 
     pub fn add<T: Component>(
@@ -149,11 +212,11 @@ impl Entity {
         value: T,
         cx: Bundle<(&WORLD, &mut AccessRes<EntityStore>, &mut AccessComp<T>)>,
     ) -> Obj<T> {
-        let entities = EntityStore::fetch_mut(pack!(cx));
+        let store = EntityStore::fetch_mut(pack!(cx));
         let storage = &mut **<T::Arena>::fetch_mut(pack!(cx));
 
         // Ensure that the entity is alive
-        let entity = &mut entities
+        let entity = &mut store
             .entities
             .get_mut(self.0)
             .unwrap_or_else(|| panic!("{self:?} is not alive"));
@@ -173,7 +236,9 @@ impl Entity {
         entry.insert(handle);
 
         // ...and update the `EntityStore` to reflect the additional component.
-        entity.archetype = entities
+        Self::mark_shape_dirty_before_update(&mut store.reshaped_entities, self, entity);
+
+        entity.archetype = store
             .archetypes
             .lookup_extend(entity.archetype, ComponentId::of::<T>());
 
@@ -216,6 +281,8 @@ impl Entity {
             return None;
         };
 
+        Self::mark_shape_dirty_before_update(&mut store.reshaped_entities, self, entity);
+
         entity.archetype = store
             .archetypes
             .lookup_remove(entity.archetype, ComponentId::of::<T>());
@@ -239,10 +306,25 @@ impl Entity {
     pub fn destroy_now(self, cx: Bundle<(&mut WORLD, &mut AccessRes<EntityStore>)>) {
         let store = EntityStore::fetch_mut(pack!(cx));
 
+        // Destroy entity information before calling destructors to avoid reentrant operations on
+        // dying entities.
         let Some(entity) = store.entities.remove(self.0) else {
             return;
         };
 
+        // Remove from the reshaped map and into the dead map.
+        let old_archetype = store
+            .reshaped_entities
+            .remove(&self)
+            .unwrap_or(entity.archetype);
+
+        if old_archetype != ArchetypeId::EMPTY {
+            store
+                .dead_entities
+                .insert((entity.archetype, entity.index_in_archetype));
+        }
+
+        // Destroy all the components.
         let arch = entity.archetype;
         let arch_len = store.archetypes.components(arch).len();
 
@@ -252,6 +334,7 @@ impl Entity {
             (comp.remove)(unpack!(cx => &mut WORLD), self);
         }
 
+        // Destroy all the children.
         for child in entity.children {
             child.destroy_now(pack!(cx));
         }
@@ -259,5 +342,287 @@ impl Entity {
 
     pub fn debug<'a>(self, cx: Bundle<&'a mut WORLD>) -> WorldFmt<'a, Self> {
         WorldFmt::new(self, pack!(cx))
+    }
+
+    // TODO: implement proper queries
+    pub fn query(comps: impl IntoIterator<Item = ComponentId>) -> Vec<Entity> {
+        let store = EntityStore::fetch();
+
+        store
+            .archetypes
+            .archetypes_with_set(comps)
+            .into_iter()
+            .flat_map(|arch| {
+                store
+                    .archetype_members
+                    .index_members
+                    .get(&arch)
+                    .map_or(&[][..], Vec::as_slice)
+                    .iter()
+                    .copied()
+            })
+            .collect()
+    }
+
+    pub fn flush(cx: Bundle<&mut WORLD>) {
+        let world: &mut World = cx.unwrap();
+
+        // Process queued operations
+        // TODO: define queued operations
+
+        // Process reshape requests.
+        bind!(world);
+
+        let store = EntityStore::fetch_mut();
+        let archetype_members = Rc::get_mut(&mut store.archetype_members)
+            .expect("cannot `flush` the world while it is still being iterated over");
+
+        // Begin with entity destruction since we don't want to try to move the indices of dead
+        // entities as we update the archetypes.
+        for (arch, idx) in store.dead_entities.drain() {
+            let index_members = archetype_members.index_members.get_mut(&arch).unwrap();
+            let comp_members = store.archetypes.components(arch);
+
+            // We're going to be swap-removing a bunch of entities out of archetypes and we really
+            // don't want to update the indices of dead entities we moved into the middle of the
+            // archetype so let's trim all dead entities at the end of the archetype.
+            while index_members
+                .last()
+                .is_some_and(|&entity| !store.entities.contains(entity.0))
+            {
+                index_members.pop();
+
+                for &comp in comp_members {
+                    archetype_members
+                        .comp_members
+                        .get_mut(&(arch, comp))
+                        .unwrap()
+                        .pop();
+                }
+            }
+
+            // If the index is out of bound, we know that end-trimming took care of the entity
+            // already.
+            if idx as usize >= index_members.len() {
+                continue;
+            }
+
+            // Otherwise, we need to swap-remove the entity...
+            index_members.swap_remove(idx as usize);
+
+            for &comp in comp_members {
+                archetype_members
+                    .comp_members
+                    .get_mut(&(arch, comp))
+                    .unwrap()
+                    .swap_remove(idx as usize);
+            }
+
+            // ...and patch the index of the moved entity.
+            if let Some(&moved) = index_members.get(idx as usize) {
+                store.entities[moved.0].index_in_archetype = idx;
+            }
+        }
+
+        // Now, we can handle move requests involving entirely live entities.
+        for (entity, old_arch) in store.reshaped_entities.drain() {
+            let own_info = &store.entities[entity.0];
+            let curr_arch = own_info.archetype;
+            let old_idx = own_info.index_in_archetype;
+
+            // Skip over entities which haven't actually changed archetype.
+            if curr_arch == old_arch {
+                continue;
+            }
+
+            // Remove from the old archetype.
+            if old_arch != ArchetypeId::EMPTY {
+                let index_members = archetype_members.index_members.get_mut(&old_arch).unwrap();
+                let comp_members = store.archetypes.components(old_arch);
+
+                index_members.swap_remove(old_idx as usize);
+
+                for &comp in comp_members {
+                    archetype_members
+                        .comp_members
+                        .get_mut(&(old_arch, comp))
+                        .unwrap()
+                        .swap_remove(old_idx as usize);
+                }
+
+                // ...and patch the index of the moved entity.
+                if let Some(&moved) = index_members.get(old_idx as usize) {
+                    store.entities[moved.0].index_in_archetype = old_idx;
+                }
+            }
+
+            // Move into the new archetype.
+            if curr_arch != ArchetypeId::EMPTY {
+                let comp_members = store.archetypes.components(curr_arch);
+                let index_members = archetype_members
+                    .index_members
+                    .entry(curr_arch)
+                    .or_insert_with(|| {
+                        for &comp in comp_members {
+                            archetype_members
+                                .comp_members
+                                .insert((old_arch, comp), Vec::new());
+                        }
+
+                        Vec::new()
+                    });
+
+                // Move into the entity index
+                store.entities[entity.0].index_in_archetype = u32::try_from(index_members.len())
+                    .unwrap_or_else(|_| panic!("too many entities in archetype {curr_arch:?}"));
+
+                index_members.push(entity);
+
+                // ...and attach their components.
+                for &comp in comp_members {
+                    archetype_members
+                        .comp_members
+                        .get_mut(&(old_arch, comp))
+                        .unwrap()
+                        .push(unsafe { (comp.fetch_idx)(&WORLD, entity) });
+                }
+            }
+        }
+    }
+}
+
+// === Component === //
+
+pub type AccessComp<T> = AccessRes<<T as Component>::Arena>;
+pub type AccessCompRef<'a, T> = (&'a WORLD, &'a AccessComp<T>);
+pub type AccessCompMut<'a, T> = (&'a WORLD, &'a mut AccessComp<T>);
+
+pub trait Component: 'static + Sized + fmt::Debug {
+    type Arena: Resource + DerefMut<Target = Storage<Self>>;
+}
+
+#[derive(Debug)]
+#[derive_where(Default)]
+pub struct Storage<T> {
+    pub arena: Arena<T>,
+    pub entity_map: FxHashMap<Entity, Index>,
+}
+
+#[doc(hidden)]
+pub mod component_internals {
+    pub use {
+        super::{Component, Storage},
+        crate::resource,
+        std::ops::{Deref, DerefMut},
+    };
+}
+
+#[macro_export]
+macro_rules! component {
+    ($($ty:ty)*) => {$(
+        const _: () = {
+            #[derive(Default)]
+            pub struct Storage($crate::entity::component_internals::Storage<$ty>);
+
+            impl $crate::entity::component_internals::Deref for Storage {
+                type Target = $crate::entity::component_internals::Storage<$ty>;
+
+                fn deref(&self) -> &Self::Target {
+                    &self.0
+                }
+            }
+
+            impl $crate::entity::component_internals::DerefMut for Storage {
+                fn deref_mut(&mut self) -> &mut Self::Target {
+                    &mut self.0
+                }
+            }
+
+            $crate::entity::component_internals::resource!(Storage);
+
+            impl $crate::entity::component_internals::Component for $ty {
+                type Arena = Storage;
+            }
+        };
+    )*};
+}
+
+pub use component;
+
+// === Obj === //
+
+#[derive_where(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct Obj<T: Component> {
+    _ty: PhantomData<fn(T) -> T>,
+    index: Index,
+}
+
+impl<T: Component> fmt::Debug for Obj<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let index = self.index.to_bits();
+
+        ImmutableWorld::try_use_tls(|world| {
+            if let Some(world) = world {
+                let storage = world.read::<T::Arena>();
+
+                if let Some(alive) = storage.arena.get(self.index) {
+                    f.debug_tuple("Obj")
+                        .field(&format_args!("0x{index:x}"))
+                        .field(alive)
+                        .finish()
+                } else {
+                    struct Dead;
+
+                    impl fmt::Debug for Dead {
+                        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                            f.write_str("<dead>")
+                        }
+                    }
+
+                    f.debug_tuple("Obj")
+                        .field(&format_args!("0x{index:x}"))
+                        .field(&Dead)
+                        .finish()
+                }
+            } else {
+                f.debug_tuple("Obj")
+                    .field(&format_args!("0x{index:x}"))
+                    .finish()
+            }
+        })
+    }
+}
+
+impl<T: Component> Obj<T> {
+    pub fn from_raw(index: Index) -> Self {
+        Self {
+            _ty: PhantomData,
+            index,
+        }
+    }
+
+    pub fn raw(self) -> Index {
+        self.index
+    }
+
+    pub fn debug<'a>(self, cx: Bundle<&'a mut WORLD>) -> WorldFmt<'a, Self> {
+        WorldFmt::new(self, pack!(cx))
+    }
+}
+
+impl<'i, 'o, T: Component> DerefCx<'i, 'o> for Obj<T> {
+    type ContextRef = AccessCompRef<'o, T>;
+    type TargetCx = T;
+
+    fn deref_cx(&'i self, cx: Bundle<Self::ContextRef>) -> &'o Self::TargetCx {
+        &<T::Arena>::fetch(pack!(cx)).arena[self.index]
+    }
+}
+
+impl<'i, 'o, T: Component> DerefCxMut<'i, 'o> for Obj<T> {
+    type ContextMut = AccessCompMut<'o, T>;
+
+    fn deref_cx_mut(&'i mut self, cx: Bundle<Self::ContextMut>) -> &'o mut Self::TargetCx {
+        &mut <T::Arena>::fetch_mut(pack!(cx)).arena[self.index]
     }
 }

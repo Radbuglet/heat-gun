@@ -1,7 +1,7 @@
-use core::fmt;
 use std::{
     any::type_name,
     cmp::Ordering,
+    fmt,
     hash::Hash,
     ops::{Deref, Range},
 };
@@ -12,8 +12,9 @@ use hg_utils::{
 };
 use index_vec::{define_index_type, IndexVec};
 use rustc_hash::FxBuildHasher;
+use thunderdome::Index;
 
-use crate::{obj::Component, world::ImmutableWorld, Entity, World};
+use crate::{entity::Component, world::ImmutableWorld, Entity, World};
 
 // === ComponentId === //
 
@@ -33,6 +34,9 @@ impl ComponentId {
                     let val = &storage.arena[idx];
 
                     fmt.field(type_name::<T>(), val);
+                },
+                fetch_idx: |world, entity| {
+                    unsafe { &*world.single::<T::Arena>() }.entity_map[&entity]
                 },
                 remove: |world, entity| {
                     let mut world = world.reborrow();
@@ -83,6 +87,7 @@ impl PartialOrd for ComponentId {
 #[derive(Debug)]
 pub struct ComponentInfo {
     pub debug_fmt: fn(ImmutableWorld, Entity, &mut fmt::DebugStruct<'_, '_>),
+    pub fetch_idx: unsafe fn(&World, Entity) -> Index,
     pub remove: fn(&mut World, Entity),
 }
 
@@ -237,6 +242,53 @@ impl ArchetypeStore {
 
     pub fn archetypes_with(&self, id: ComponentId) -> &[ArchetypeId] {
         self.comp_arches.get(&id).map_or(&[], |v| v)
+    }
+
+    pub fn archetypes_with_set(
+        &self,
+        ids: impl IntoIterator<Item = ComponentId>,
+    ) -> Vec<ArchetypeId> {
+        let mut arches = Vec::new();
+        let mut iters = ids
+            .into_iter()
+            .map(|comp| self.archetypes_with(comp).iter().copied().peekable())
+            .collect::<Vec<_>>();
+
+        if iters.is_empty() {
+            return Vec::new();
+        }
+
+        iters.sort_by(|a, b| a.len().cmp(&b.len()));
+
+        'build: while let Some(key) = iters[0].next() {
+            // See whether all components have the keyed archetype.
+            for iter in &mut iters[1..] {
+                loop {
+                    match iter.peek() {
+                        Some(other) => match other.cmp(&key) {
+                            Ordering::Less => {
+                                // We need to catch up with the key iterator. Keep scanning.
+                                let _discard = iter.next();
+                            }
+                            Ordering::Equal => {
+                                // This component contains the archetype of interest.
+                                break;
+                            }
+                            Ordering::Greater => {
+                                // This component does not include the key archetype.
+                                continue 'build;
+                            }
+                        },
+                        None => break 'build,
+                    }
+                }
+            }
+
+            // If they do, add it.
+            arches.push(key);
+        }
+
+        arches
     }
 
     pub fn components(&self, id: ArchetypeId) -> &[ComponentId] {

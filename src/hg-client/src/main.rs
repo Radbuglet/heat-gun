@@ -2,32 +2,45 @@
 
 use std::ops::Deref;
 
-use hg_ecs::{bind, component, Entity, World, WORLD};
-use macroquad::{color::RED, input::is_quit_requested, math::Vec2, shapes::draw_rectangle, time::get_frame_time, window::next_frame};
+use hg_ecs::{archetype::ComponentId, bind, component, Entity, World, WORLD};
+use macroquad::{
+    color::RED,
+    input::is_quit_requested,
+    math::Vec2,
+    shapes::draw_rectangle,
+    time::get_frame_time,
+    window::next_frame,
+};
 
 #[macroquad::main("Heat Gun")]
 async fn main() {
     let mut world = World::new();
 
-    let root = world_init(&mut world);
+    world_init(&mut world);
 
     while !is_quit_requested() {
-        world_tick(&mut world, root);
+        world_tick(&mut world);
         next_frame().await;
     }
 }
 
-fn world_init(world: &mut World) -> Entity {
+fn world_init(world: &mut World) {
     bind!(world);
-
-    spawn_player()
+    spawn_player();
 }
 
-fn world_tick(world: &mut World, root: Entity) {
+fn world_tick(world: &mut World) {
     bind!(world);
 
-    root.get::<UpdateHandler>()(&mut WORLD, root);
-    root.get::<RenderHandler>()(&mut WORLD, root);
+    for obj in Entity::query([
+        ComponentId::of::<UpdateHandler>(),
+        ComponentId::of::<RenderHandler>(),
+    ]) {
+        obj.get::<UpdateHandler>()(&mut WORLD, obj);
+        obj.get::<RenderHandler>()(&mut WORLD, obj);
+    }
+
+    Entity::flush();
 }
 
 #[derive(Debug, Copy, Clone, Default)]

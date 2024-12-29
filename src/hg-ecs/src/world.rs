@@ -34,7 +34,7 @@ pub struct World {
     curr_origin: NonZeroUsize,
 
     /// This is the set of lazily-initialized resources that this world provides.
-    resources: FxHashMap<TypeId, Rc<dyn ErasedResourceValue>>,
+    resources: UnsafeCell<FxHashMap<TypeId, Rc<dyn ErasedResourceValue>>>,
 }
 
 impl fmt::Debug for World {
@@ -54,13 +54,14 @@ impl World {
         Self {
             _no_send_sync: PhantomData,
             curr_origin: NonZeroUsize::new(1).unwrap(),
-            resources: FxHashMap::default(),
+            resources: UnsafeCell::default(),
         }
     }
 
-    pub fn single<T: Resource>(&mut self) -> *mut T {
-        let res = self
-            .resources
+    pub fn single<T: Resource>(&self) -> *mut T {
+        let resources = unsafe { &mut *self.resources.get() };
+
+        let res = resources
             .entry(TypeId::of::<T::Cx>())
             .or_insert_with(|| Rc::<ResourceValue<T>>::default());
 
@@ -122,6 +123,7 @@ impl WorldReborrow<'_> {
                 let comp = self
                     .world
                     .resources
+                    .get_mut()
                     .entry(req.marker_type_id())
                     .or_insert_with(|| {
                         let info =
