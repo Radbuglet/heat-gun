@@ -30,7 +30,7 @@ pub struct World {
     /// This is a single-threaded object.
     _no_send_sync: PhantomData<*const ()>,
 
-    /// Represents the [`WorldBundle`] instance from which a given [`AccessToken`] was fetched.
+    /// Represents the [`WorldReborrow`] instance from which a given [`AccessToken`] was fetched.
     curr_origin: NonZeroUsize,
 
     /// This is the set of lazily-initialized resources that this world provides.
@@ -186,7 +186,7 @@ impl WorldReborrow<'_> {
 
 impl<'a> Drop for WorldReborrow<'a> {
     fn drop(&mut self) {
-        // The `AccessToken`s we lend out can only live for as long as this `WorldBundle` instance
+        // The `AccessToken`s we lend out can only live for as long as this `WorldReborrow` instance
         // is alive. Hence, it is safe to restore the previous state and allow this current state to
         // be reused.
 

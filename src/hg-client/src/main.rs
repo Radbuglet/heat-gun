@@ -2,7 +2,7 @@
 
 use std::ops::Deref;
 
-use hg_ecs::{archetype::ComponentId, bind, component, Entity, World, WORLD};
+use hg_ecs::{bind, component, query::Query, Entity, Obj, World, WORLD};
 use macroquad::{
     color::RED,
     input::is_quit_requested,
@@ -32,12 +32,9 @@ fn world_init(world: &mut World) {
 fn world_tick(world: &mut World) {
     bind!(world);
 
-    for obj in Entity::query([
-        ComponentId::of::<UpdateHandler>(),
-        ComponentId::of::<RenderHandler>(),
-    ]) {
-        obj.get::<UpdateHandler>()(&mut WORLD, obj);
-        obj.get::<RenderHandler>()(&mut WORLD, obj);
+    for (obj, update, render) in Query::<(Entity, Obj<UpdateHandler>, Obj<RenderHandler>)>::new() {
+        update(&mut WORLD, obj);
+        render(&mut WORLD, obj);
     }
 
     Entity::flush();

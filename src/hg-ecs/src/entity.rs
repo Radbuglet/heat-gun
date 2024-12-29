@@ -16,7 +16,7 @@ use crate::{
     archetype::{ArchetypeId, ArchetypeStore, ComponentId},
     bind, resource,
     world::{ImmutableWorld, WorldFmt},
-    AccessRes, Resource, World, WORLD,
+    AccessRes, AccessResRef, Resource, World, WORLD,
 };
 
 // === Store === //
@@ -35,7 +35,7 @@ pub struct EntityStore {
     /// A snapshot of members of each archetype since the last `flush`.
     ///
     /// This `Rc` is cloned while the storage is being iterated and is otherwise exclusive.
-    archetype_members: Rc<ArchetypeMembers>,
+    query_state: Rc<EntityQueryState>,
 
     /// Maps entities that have been reshaped to their original archetype. Destroyed entities are
     /// included in the `dead_entities` map instead.
@@ -71,9 +71,9 @@ struct EntityInfo {
 }
 
 #[derive(Debug, Default)]
-struct ArchetypeMembers {
-    index_members: FxHashMap<ArchetypeId, Vec<Entity>>,
-    comp_members: FxHashMap<(ArchetypeId, ComponentId), Vec<Index>>,
+pub struct EntityQueryState {
+    pub index_members: FxHashMap<ArchetypeId, Vec<Entity>>,
+    pub comp_members: FxHashMap<(ArchetypeId, ComponentId), Vec<Index>>,
 }
 
 impl Default for EntityStore {
@@ -82,7 +82,7 @@ impl Default for EntityStore {
             root: Entity::DANGLING,
             entities: Arena::new(),
             archetypes: ArchetypeStore::new(),
-            archetype_members: Rc::default(),
+            query_state: Rc::default(),
             reshaped_entities: FxHashMap::default(),
             dead_entities: FxHashSet::default(),
         };
@@ -344,24 +344,12 @@ impl Entity {
         WorldFmt::new(self, pack!(cx))
     }
 
-    // TODO: implement proper queries
-    pub fn query(comps: impl IntoIterator<Item = ComponentId>) -> Vec<Entity> {
-        let store = EntityStore::fetch();
+    pub fn archetypes<'a>(cx: Bundle<AccessResRef<'a, EntityStore>>) -> &'a ArchetypeStore {
+        &EntityStore::fetch(pack!(cx)).archetypes
+    }
 
-        store
-            .archetypes
-            .archetypes_with_set(comps)
-            .into_iter()
-            .flat_map(|arch| {
-                store
-                    .archetype_members
-                    .index_members
-                    .get(&arch)
-                    .map_or(&[][..], Vec::as_slice)
-                    .iter()
-                    .copied()
-            })
-            .collect()
+    pub fn query_state<'a>(cx: Bundle<AccessResRef<'a, EntityStore>>) -> &'a Rc<EntityQueryState> {
+        &EntityStore::fetch(pack!(cx)).query_state
     }
 
     pub fn flush(cx: Bundle<&mut WORLD>) {
@@ -374,7 +362,7 @@ impl Entity {
         bind!(world);
 
         let store = EntityStore::fetch_mut();
-        let archetype_members = Rc::get_mut(&mut store.archetype_members)
+        let archetype_members = Rc::get_mut(&mut store.query_state)
             .expect("cannot `flush` the world while it is still being iterated over");
 
         // Begin with entity destruction since we don't want to try to move the indices of dead
@@ -466,7 +454,7 @@ impl Entity {
                         for &comp in comp_members {
                             archetype_members
                                 .comp_members
-                                .insert((old_arch, comp), Vec::new());
+                                .insert((curr_arch, comp), Vec::new());
                         }
 
                         Vec::new()
@@ -482,7 +470,7 @@ impl Entity {
                 for &comp in comp_members {
                     archetype_members
                         .comp_members
-                        .get_mut(&(old_arch, comp))
+                        .get_mut(&(curr_arch, comp))
                         .unwrap()
                         .push(unsafe { (comp.fetch_idx)(&WORLD, entity) });
                 }
