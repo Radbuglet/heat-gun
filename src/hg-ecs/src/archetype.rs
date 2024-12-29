@@ -31,7 +31,7 @@ impl ComponentId {
                     let storage = world.read::<T::Arena>();
 
                     let idx = storage.entity_map[&entity];
-                    let val = &storage.arena[idx];
+                    let (_ent, val) = &storage.arena[idx];
 
                     fmt.field(type_name::<T>(), val);
                 },

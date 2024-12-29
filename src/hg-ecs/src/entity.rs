@@ -225,14 +225,14 @@ impl Entity {
         let entry = match storage.entity_map.entry(self) {
             Entry::Occupied(entry) => {
                 let handle = *entry.get();
-                storage.arena[handle] = value;
+                storage.arena[handle].1 = value;
                 return Obj::from_raw(handle);
             }
             Entry::Vacant(entry) => entry,
         };
 
         // Otherwise, create the new `Obj`...
-        let handle = storage.arena.insert(value);
+        let handle = storage.arena.insert((self, value));
         entry.insert(handle);
 
         // ...and update the `EntityStore` to reflect the additional component.
@@ -300,7 +300,7 @@ impl Entity {
             return None;
         };
 
-        Some(storage.arena.remove(obj).unwrap())
+        Some(storage.arena.remove(obj).unwrap().1)
     }
 
     pub fn destroy_now(self, cx: Bundle<(&mut WORLD, &mut AccessRes<EntityStore>)>) {
@@ -492,7 +492,7 @@ pub trait Component: 'static + Sized + fmt::Debug {
 #[derive(Debug)]
 #[derive_where(Default)]
 pub struct Storage<T> {
-    pub arena: Arena<T>,
+    pub arena: Arena<(Entity, T)>,
     pub entity_map: FxHashMap<Entity, Index>,
 }
 
@@ -593,6 +593,10 @@ impl<T: Component> Obj<T> {
         self.index
     }
 
+    pub fn entity(self, cx: Bundle<AccessCompRef<'_, T>>) -> Entity {
+        <T::Arena>::fetch(pack!(cx)).arena[self.index].0
+    }
+
     pub fn debug<'a>(self, cx: Bundle<&'a mut WORLD>) -> WorldFmt<'a, Self> {
         WorldFmt::new(self, pack!(cx))
     }
@@ -603,7 +607,7 @@ impl<'i, 'o, T: Component> DerefCx<'i, 'o> for Obj<T> {
     type TargetCx = T;
 
     fn deref_cx(&'i self, cx: Bundle<Self::ContextRef>) -> &'o Self::TargetCx {
-        &<T::Arena>::fetch(pack!(cx)).arena[self.index]
+        &<T::Arena>::fetch(pack!(cx)).arena[self.index].1
     }
 }
 
@@ -611,6 +615,6 @@ impl<'i, 'o, T: Component> DerefCxMut<'i, 'o> for Obj<T> {
     type ContextMut = AccessCompMut<'o, T>;
 
     fn deref_cx_mut(&'i mut self, cx: Bundle<Self::ContextMut>) -> &'o mut Self::TargetCx {
-        &mut <T::Arena>::fetch_mut(pack!(cx)).arena[self.index]
+        &mut <T::Arena>::fetch_mut(pack!(cx)).arena[self.index].1
     }
 }
