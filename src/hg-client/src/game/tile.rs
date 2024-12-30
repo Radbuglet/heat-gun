@@ -37,10 +37,11 @@ const CHUNK_EDGE: usize = 16;
 const CHUNK_AREA: usize = CHUNK_EDGE * CHUNK_EDGE;
 
 fn decompose_pos(pos: IVec2) -> (IVec2, usize) {
-    let rel = IVec2::new(pos.x % CHUNK_EDGE as i32, pos.y % CHUNK_EDGE as i32);
+    let chunk_size = IVec2::splat(CHUNK_EDGE as i32);
+    let rel = pos.rem_euclid(chunk_size);
 
     (
-        pos / CHUNK_EDGE as i32,
+        pos.div_euclid(chunk_size),
         rel.y as usize * CHUNK_EDGE + rel.x as usize,
     )
 }
@@ -209,6 +210,9 @@ pub struct TileConfig {
 }
 
 impl TileConfig {
+    pub fn new(offset: Vec2, size: Vec2) -> Self {
+        Self { offset, size }
+    }
     pub fn world_to_tile(self, world: Vec2) -> IVec2 {
         let world = world - self.offset;
         world.div_euclid(self.size).as_ivec2()
@@ -287,34 +291,39 @@ impl TileLayer {
     }
 }
 
-// === TileLayerRenderer === //
+// === TileRenderer === //
 
 #[derive(Debug)]
-pub struct TileLayerRenderer {
-    layer: Obj<TileLayer>,
+pub struct TileRenderer {
+    layers: Vec<Obj<TileLayer>>,
     cache: DensePaletteCache<PaletteVisuals>,
 }
 
-component!(TileLayerRenderer);
+component!(TileRenderer);
 
-impl TileLayerRenderer {
-    pub fn new(layer: Obj<TileLayer>) -> Self {
+impl TileRenderer {
+    pub fn new(layers: Vec<Obj<TileLayer>>) -> Self {
+        assert!(!layers.is_empty());
+        let palette = layers[0].palette;
+
         Self {
-            layer,
-            cache: DensePaletteCache::new(layer.palette),
+            layers,
+            cache: DensePaletteCache::new(palette),
         }
     }
 
     pub fn render(&mut self) {
-        self.layer.render(
-            &mut self.cache,
-            Rect::new(0., 0., screen_width(), screen_height()),
-        );
+        for &layer in &self.layers {
+            layer.render(
+                &mut self.cache,
+                Rect::new(0., 0., screen_width(), screen_height()),
+            );
+        }
     }
 }
 
 pub fn sys_render_tiles() {
-    for mut renderer in Query::<Obj<TileLayerRenderer>>::new() {
+    for mut renderer in Query::<Obj<TileRenderer>>::new() {
         renderer.render();
     }
 }
