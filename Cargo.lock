@@ -154,6 +154,7 @@ name = "hg-client"
 version = "0.1.0"
 dependencies = [
  "hg-ecs",
+ "hg-utils",
  "macroquad",
 ]
 

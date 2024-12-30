@@ -507,7 +507,7 @@ pub mod component_internals {
 
 #[macro_export]
 macro_rules! component {
-    ($($ty:ty)*) => {$(
+    ($($ty:ty),*$(,)?) => {$(
         const _: () = {
             #[derive(Default)]
             pub struct Storage($crate::entity::component_internals::Storage<$ty>);
