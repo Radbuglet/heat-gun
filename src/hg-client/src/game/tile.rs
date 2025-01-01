@@ -6,7 +6,7 @@ use std::{
 use hg_ecs::{
     component,
     entity::{Component, EntityStore},
-    AccessComp, AccessRes, Entity, Obj, Query, WORLD,
+    AccessComp, AccessRes, Entity, Obj, WORLD,
 };
 use hg_utils::hash::FxHashMap;
 use macroquad::{
@@ -319,11 +319,5 @@ impl TileRenderer {
                 Rect::new(0., 0., screen_width(), screen_height()),
             );
         }
-    }
-}
-
-pub fn sys_render_tiles() {
-    for mut renderer in Query::<Obj<TileRenderer>>::new() {
-        renderer.render();
     }
 }

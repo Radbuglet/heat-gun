@@ -1,15 +1,15 @@
 use std::{
     any::type_name,
     context::{pack, unpack, Bundle, DerefCx, DerefCxMut},
-    fmt,
+    fmt, iter,
     marker::PhantomData,
     ops::DerefMut,
     rc::Rc,
+    slice,
 };
 
 use derive_where::derive_where;
 use hg_utils::hash::{hash_map::Entry, FxHashMap, FxHashSet};
-use thin_vec::ThinVec;
 use thunderdome::{Arena, Index};
 
 use crate::{
@@ -67,7 +67,7 @@ struct EntityInfo {
     parent: Option<Entity>,
 
     /// The entity's set of children. These are guaranteed to be alive.
-    children: ThinVec<Entity>,
+    children: EntityChildren,
 }
 
 #[derive(Debug, Default)]
@@ -144,7 +144,7 @@ impl Entity {
             index_in_parent: 0,
             index_in_archetype: 0,
             parent: None,
-            children: ThinVec::new(),
+            children: EntityChildren { vec: Rc::default() },
         });
 
         Self(index)
@@ -162,6 +162,12 @@ impl Entity {
         EntityStore::fetch().entities[self.0].parent
     }
 
+    pub fn children<'a>(self, cx: Bundle<AccessResRef<'a, EntityStore>>) -> EntityChildren {
+        EntityStore::fetch(pack!(cx)).entities[self.0]
+            .children
+            .clone()
+    }
+
     pub fn set_parent(self, parent: Option<Entity>) {
         let store = EntityStore::fetch_mut();
 
@@ -173,8 +179,8 @@ impl Entity {
         if let Some(parent) = old_parent {
             let parent = &mut store.entities[parent.0];
 
-            parent.children.swap_remove(old_index as usize);
-            if let Some(&moved) = parent.children.get(old_index as usize) {
+            parent.children.mutate().swap_remove(old_index as usize);
+            if let Some(&moved) = parent.children.vec.get(old_index as usize) {
                 store.entities[moved.0].index_in_parent = old_index;
             }
         }
@@ -193,7 +199,7 @@ impl Entity {
                 )
             });
 
-            parent_val.children.push(self);
+            parent_val.children.mutate().push(self);
         }
     }
 
@@ -335,7 +341,7 @@ impl Entity {
         }
 
         // Destroy all the children.
-        for child in entity.children {
+        for child in &entity.children {
             child.destroy_now(pack!(cx));
         }
     }
@@ -346,6 +352,10 @@ impl Entity {
 
     pub fn archetypes<'a>(cx: Bundle<AccessResRef<'a, EntityStore>>) -> &'a ArchetypeStore {
         &EntityStore::fetch(pack!(cx)).archetypes
+    }
+
+    pub fn archetype(self) -> ArchetypeId {
+        EntityStore::fetch().entities[self.0].archetype
     }
 
     pub fn query_state<'a>(cx: Bundle<AccessResRef<'a, EntityStore>>) -> &'a Rc<EntityQueryState> {
@@ -479,6 +489,41 @@ impl Entity {
     }
 }
 
+#[derive(Clone)]
+pub struct EntityChildren {
+    vec: Rc<Vec<Entity>>,
+}
+
+impl fmt::Debug for EntityChildren {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.vec.iter()).finish()
+    }
+}
+
+impl EntityChildren {
+    pub fn len(&self) -> usize {
+        self.vec.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.vec.is_empty()
+    }
+
+    fn mutate(&mut self) -> &mut Vec<Entity> {
+        Rc::get_mut(&mut self.vec)
+            .expect("cannot modify the children of an entity while they're being iterated")
+    }
+}
+
+impl<'a> IntoIterator for &'a EntityChildren {
+    type Item = Entity;
+    type IntoIter = iter::Copied<slice::Iter<'a, Entity>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.vec.iter().copied()
+    }
+}
+
 // === Component === //
 
 pub type AccessComp<T> = AccessRes<<T as Component>::Arena>;
@@ -589,8 +634,8 @@ impl<T: Component> Obj<T> {
         }
     }
 
-    pub fn raw(self) -> Index {
-        self.index
+    pub fn raw(me: Self) -> Index {
+        me.index
     }
 
     pub fn entity(self, cx: Bundle<AccessCompRef<'_, T>>) -> Entity {

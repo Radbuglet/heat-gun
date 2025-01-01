@@ -6,6 +6,7 @@ use macroquad::{
 };
 
 use super::{
+    graphics::register_gfx,
     kinematic::{KinematicProps, Pos, Vel},
     sprite::SolidRenderer,
 };
@@ -18,7 +19,7 @@ pub struct PlayerController {
 component!(PlayerController);
 
 pub fn spawn_player(parent: Entity) -> Entity {
-    Entity::new(parent)
+    let player = Entity::new(parent)
         .with(Pos::default())
         .with(Vel::default())
         .with(KinematicProps {
@@ -26,7 +27,10 @@ pub fn spawn_player(parent: Entity) -> Entity {
             friction: 0.98,
         })
         .with(PlayerController::default())
-        .with(SolidRenderer::new_centered(RED, 50.))
+        .with(SolidRenderer::new_centered(RED, 50.));
+
+    register_gfx(player);
+    player
 }
 
 pub fn sys_update_players() {

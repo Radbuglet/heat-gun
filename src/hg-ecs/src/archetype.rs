@@ -7,7 +7,7 @@ use std::{
 };
 
 use hg_utils::{
-    hash::{hash_map::RawEntryMut, FxHashMap, IterHashExt},
+    hash::{hash_map::RawEntryMut, FxHashMap, FxHashSet, IterHashExt},
     iter::{MergeIter, RemoveIter},
 };
 use index_vec::{define_index_type, IndexVec};
@@ -120,6 +120,7 @@ struct ArchetypeKey {
 #[derive(Debug)]
 struct ArchetypeData {
     comps: Range<usize>,
+    comp_map: Box<FxHashSet<ComponentId>>,
     pos: FxHashMap<ComponentId, ArchetypeId>,
     neg: FxHashMap<ComponentId, ArchetypeId>,
 }
@@ -135,6 +136,7 @@ impl ArchetypeStore {
         let mut arena = IndexVec::new();
         arena.push(ArchetypeData {
             comps: 0..0,
+            comp_map: Box::default(),
             pos: FxHashMap::default(),
             neg: FxHashMap::default(),
         });
@@ -209,6 +211,7 @@ impl ArchetypeStore {
         // Create the `new` archetype with an appropriate back-ref to its original archetype.
         let mut new_data = ArchetypeData {
             comps: comps.clone(),
+            comp_map: Box::new(comps_vec.iter().copied().collect()),
             pos: FxHashMap::default(),
             neg: FxHashMap::default(),
         };
@@ -294,6 +297,10 @@ impl ArchetypeStore {
     pub fn components(&self, id: ArchetypeId) -> &[ComponentId] {
         let comps = self.arena[id].comps.clone();
         &self.comp_buf[comps]
+    }
+
+    pub fn components_set(&self, id: ArchetypeId) -> &FxHashSet<ComponentId> {
+        &self.arena[id].comp_map
     }
 }
 

@@ -5,10 +5,11 @@ use macroquad::{
 };
 
 use crate::game::{
+    graphics::{find_gfx, register_gfx},
     kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame, Pos},
     player::{spawn_player, sys_update_players},
-    sprite::sys_render_sprites,
-    tile::{sys_render_tiles, PaletteVisuals, TileConfig, TileLayer, TilePalette, TileRenderer},
+    sprite::SolidRenderer,
+    tile::{PaletteVisuals, TileConfig, TileLayer, TilePalette, TileRenderer},
 };
 
 pub fn world_init(world: &mut World) {
@@ -42,6 +43,7 @@ pub fn world_init(world: &mut World) {
 
     // Create renderer
     level.add(TileRenderer::new(vec![background]));
+    register_gfx(level);
 
     // Spawn the player
     let player = spawn_player(Entity::root());
@@ -59,6 +61,11 @@ pub fn world_tick(world: &mut World) {
     sys_apply_kinematics();
 
     // Render
-    sys_render_tiles();
-    sys_render_sprites();
+    for layer in &find_gfx::<TileRenderer>(Entity::root()) {
+        layer.get::<TileRenderer>().render();
+    }
+
+    for solid in &find_gfx::<SolidRenderer>(Entity::root()) {
+        solid.get::<SolidRenderer>().render();
+    }
 }
