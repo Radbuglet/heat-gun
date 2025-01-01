@@ -1,6 +1,15 @@
-use std::{fmt, iter, rc::Rc};
+use std::{
+    context::{infer_bundle, pack, Bundle, DerefCxMut},
+    fmt, iter,
+    rc::Rc,
+};
 
-use hg_ecs::{archetype::ComponentId, component, entity::Component, Entity};
+use hg_ecs::{
+    archetype::ComponentId,
+    component,
+    entity::{Component, EntityStore},
+    AccessComp, AccessRes, Entity, WORLD,
+};
 use hg_utils::hash::{hash_map::Entry, hash_set, FxHashMap, FxHashSet};
 
 // === Graphics Bus === //
@@ -11,7 +20,7 @@ pub fn register_gfx(target: Entity) {
         "registered {target:?} as a graphics object more than once"
     );
 
-    let mut iter = target.parent();
+    let mut iter = Some(target);
     let arch_store = Entity::archetypes();
     let arch = target.archetype();
 
@@ -34,15 +43,24 @@ pub fn register_gfx(target: Entity) {
     target.add(GfxParticipant);
 }
 
-pub fn find_gfx<T: Component>(ancestor: Entity) -> GfxNodeCollection {
-    let mut node = match ancestor.try_get::<GraphicsNode>() {
+fn find_gfx_inner<'a>(
+    ancestor: Entity,
+    id: ComponentId,
+    cx: Bundle<(
+        &'a WORLD,
+        &'a mut AccessComp<GraphicsNode>,
+        &'a mut AccessRes<EntityStore>,
+    )>,
+) -> &'a mut GfxNodeCollection {
+    let mut node = match ancestor.try_get::<GraphicsNode>(pack!(cx)) {
         Some(parent) => parent,
-        None => ancestor.add(GraphicsNode::default()),
+        None => ancestor.add(GraphicsNode::default(), pack!(cx)),
     };
+    let node = node.deref_cx_mut(pack!(cx));
 
-    let entry = match node.descendants.entry(ComponentId::of::<T>()) {
+    let entry = match node.descendants.entry(id) {
         Entry::Occupied(entry) => {
-            return entry.get().clone();
+            return entry.into_mut();
         }
         Entry::Vacant(entry) => entry,
     };
@@ -52,11 +70,11 @@ pub fn find_gfx<T: Component>(ancestor: Entity) -> GfxNodeCollection {
     let mut visit_stack = vec![ancestor];
 
     while let Some(target) = visit_stack.pop() {
-        visit_stack.extend(&target.children());
+        visit_stack.extend(&target.children(pack!(cx)));
 
-        let comps = Entity::archetypes().components_set(target.archetype());
+        let comps = Entity::archetypes(pack!(cx)).components_set(target.archetype());
 
-        if comps.contains(&ComponentId::of::<T>())
+        if comps.contains(&id)
             && comps.contains(&ComponentId::of::<GfxParticipant>())
         {
             descendants.insert(target);
@@ -66,8 +84,25 @@ pub fn find_gfx<T: Component>(ancestor: Entity) -> GfxNodeCollection {
     let descendants = GfxNodeCollection {
         nodes: Rc::new(descendants),
     };
-    entry.insert(descendants.clone());
-    descendants
+    entry.insert(descendants.clone())
+}
+
+pub fn find_gfx_with(ancestor: Entity, id: ComponentId) -> GfxNodeCollection {
+    let collection = find_gfx_inner(ancestor, id);
+
+    if let Some(collection) = collection.try_mutate() {
+        let cx = pack!(@env => Bundle<infer_bundle!('_)>);
+        collection.retain(|v| {
+            let static ..cx;
+            v.is_alive()
+        });
+    }
+
+    collection.clone()
+}
+
+pub fn find_gfx<T: Component>(ancestor: Entity) -> GfxNodeCollection {
+    find_gfx_with(ancestor, ComponentId::of::<T>())
 }
 
 #[derive(Clone)]
@@ -82,8 +117,12 @@ impl fmt::Debug for GfxNodeCollection {
 }
 
 impl GfxNodeCollection {
-    fn mutate(&mut self) -> &mut FxHashSet<Entity> {
+    fn try_mutate(&mut self) -> Option<&mut FxHashSet<Entity>> {
         Rc::get_mut(&mut self.nodes)
+    }
+
+    fn mutate(&mut self) -> &mut FxHashSet<Entity> {
+        self.try_mutate()
             .expect("cannot mutate a `GfxNodeCollection` while it's being iterated over")
     }
 

@@ -6,7 +6,7 @@ use macroquad::{
 };
 
 use super::{
-    graphics::register_gfx,
+    gfx::bus::register_gfx,
     kinematic::{KinematicProps, Pos, Vel},
     sprite::SolidRenderer,
 };

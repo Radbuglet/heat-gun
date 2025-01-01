@@ -18,8 +18,16 @@ use crate::{entity::Component, world::ImmutableWorld, Entity, World};
 
 // === ComponentId === //
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 pub struct ComponentId(&'static ComponentInfo);
+
+impl fmt::Debug for ComponentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ComponentId")
+            .field(&(self.type_name)())
+            .finish()
+    }
+}
 
 impl ComponentId {
     pub fn of<T: Component>() -> Self {
@@ -27,6 +35,7 @@ impl ComponentId {
 
         impl<T: Component> Helper<T> {
             const INFO: &'static ComponentInfo = &ComponentInfo {
+                type_name: type_name::<T>,
                 debug_fmt: |world, entity, fmt| {
                     let storage = world.read::<T::Arena>();
 
@@ -86,6 +95,7 @@ impl PartialOrd for ComponentId {
 
 #[derive(Debug)]
 pub struct ComponentInfo {
+    pub type_name: fn() -> &'static str,
     pub debug_fmt: fn(ImmutableWorld, Entity, &mut fmt::DebugStruct<'_, '_>),
     pub fetch_idx: unsafe fn(&World, Entity) -> Index,
     pub remove: fn(&mut World, Entity),

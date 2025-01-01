@@ -15,7 +15,7 @@ use thunderdome::{Arena, Index};
 use crate::{
     archetype::{ArchetypeId, ArchetypeStore, ComponentId},
     bind, resource,
-    world::{ImmutableWorld, WorldFmt},
+    world::{can_format_entity, can_format_obj, ImmutableWorld, WorldFmt},
     AccessRes, AccessResRef, Resource, World, WORLD,
 };
 
@@ -102,7 +102,7 @@ pub struct Entity(Index);
 impl fmt::Debug for Entity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         ImmutableWorld::try_use_tls(|world| {
-            if let Some(world) = world {
+            if let Some(world) = world.filter(|_| can_format_entity(*self)) {
                 let store = world.read::<EntityStore>();
 
                 let mut f = f.debug_struct("Entity");
@@ -115,6 +115,8 @@ impl fmt::Debug for Entity {
                     for comp in comps {
                         (comp.debug_fmt)(world, *self, &mut f);
                     }
+
+                    f.field("children", &entity.children.vec);
                 } else {
                     f.field("is_alive", &false);
                 }
@@ -595,13 +597,13 @@ impl<T: Component> fmt::Debug for Obj<T> {
         let index = self.index.to_bits();
 
         ImmutableWorld::try_use_tls(|world| {
-            if let Some(world) = world {
+            if let Some(world) = world.filter(|_| can_format_obj(*self)) {
                 let storage = world.read::<T::Arena>();
 
-                if let Some(alive) = storage.arena.get(self.index) {
+                if let Some((_owner, value)) = storage.arena.get(self.index) {
                     f.debug_tuple("Obj")
                         .field(&format_args!("0x{index:x}"))
-                        .field(alive)
+                        .field(value)
                         .finish()
                 } else {
                     struct Dead;

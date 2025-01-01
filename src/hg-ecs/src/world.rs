@@ -1,6 +1,6 @@
 use std::{
     any::{type_name, TypeId},
-    cell::{Cell, UnsafeCell},
+    cell::{Cell, RefCell, UnsafeCell},
     context::{
         unpack, Bundle, BundleItemRequest, BundleItemResponse, BundleItemSetFor, ContextItem,
     },
@@ -15,8 +15,11 @@ use std::{
     },
 };
 
-use hg_utils::hash::{hash_map::Entry, FxHashMap};
+use hg_utils::hash::{hash_map::Entry, FxHashMap, FxHashSet};
 use linkme::distributed_slice;
+use thunderdome::Index;
+
+use crate::{archetype::ComponentId, entity::Component, Entity, Obj};
 
 // === World === //
 
@@ -413,6 +416,60 @@ impl<T: Resource> AccessToken<T> {
 
 // === WorldFmt === //
 
+#[derive(Debug, Default)]
+struct FmtReentrancyState {
+    depth: u32,
+    entities: FxHashSet<Entity>,
+    objects: FxHashSet<(ComponentId, Index)>,
+}
+
+thread_local! {
+    static FMT_REENTRANCY: RefCell<Option<FmtReentrancyState>> = const { RefCell::new(None) };
+}
+
+fn guard_entity_reentrancy_checks() -> impl Sized {
+    FMT_REENTRANCY.with(|v| {
+        let mut v = v.borrow_mut();
+
+        let v = v.get_or_insert_default();
+        v.depth += 1;
+    });
+
+    scopeguard::guard((), |()| {
+        FMT_REENTRANCY.with(|v| {
+            let mut v = v.borrow_mut();
+            let v_inner = v.as_mut().unwrap();
+            v_inner.depth -= 1;
+
+            if v_inner.depth == 0 {
+                *v = None;
+            }
+        });
+    })
+}
+
+pub(crate) fn can_format_entity(entity: Entity) -> bool {
+    FMT_REENTRANCY.with(|v| {
+        let mut v = v.borrow_mut();
+        let v = v
+            .as_mut()
+            .expect("cannot call `can_format_entity` without a bound immutable world");
+
+        v.entities.insert(entity)
+    })
+}
+
+pub(crate) fn can_format_obj<T: Component>(obj: Obj<T>) -> bool {
+    FMT_REENTRANCY.with(|v| {
+        let mut v = v.borrow_mut();
+        let v = v
+            .as_mut()
+            .expect("cannot call `can_format_obj` without a bound immutable world");
+
+        v.objects.insert((ComponentId::of::<T>(), Obj::raw(obj)))
+    })
+}
+
 pub type WorldFmtRef<'a, T> = WorldFmt<'a, &'a T>;
 
 pub struct WorldFmt<'a, T> {
@@ -431,12 +488,14 @@ impl<'a, T> WorldFmt<'a, T> {
 
 impl<'a, T: fmt::Debug> fmt::Debug for WorldFmt<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _guard = guard_entity_reentrancy_checks();
         self.world.immutable().bind_tls(|| self.value.fmt(f))
     }
 }
 
 impl<'a, T: fmt::Display> fmt::Display for WorldFmt<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _guard = guard_entity_reentrancy_checks();
         self.world.immutable().bind_tls(|| self.value.fmt(f))
     }
 }

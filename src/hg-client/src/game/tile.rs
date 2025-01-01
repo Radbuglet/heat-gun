@@ -13,7 +13,6 @@ use macroquad::{
     color::Color,
     math::{IVec2, Rect, Vec2},
     shapes::draw_rectangle,
-    window::{screen_height, screen_width},
 };
 
 // === TileId === //
@@ -312,12 +311,9 @@ impl TileRenderer {
         }
     }
 
-    pub fn render(&mut self) {
+    pub fn render(&mut self, visible_rect: Rect) {
         for &layer in &self.layers {
-            layer.render(
-                &mut self.cache,
-                Rect::new(0., 0., screen_width(), screen_height()),
-            );
+            layer.render(&mut self.cache, visible_rect);
         }
     }
 }

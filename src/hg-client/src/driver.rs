@@ -5,7 +5,10 @@ use macroquad::{
 };
 
 use crate::game::{
-    graphics::{find_gfx, register_gfx},
+    gfx::{
+        bus::{find_gfx, register_gfx},
+        camera::{sys_update_virtual_cameras, CameraKeepArea, VirtualCamera},
+    },
     kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame, Pos},
     player::{spawn_player, sys_update_players},
     sprite::SolidRenderer,
@@ -16,7 +19,10 @@ pub fn world_init(world: &mut World) {
     bind!(world);
 
     // Create level
-    let level = Entity::new(Entity::root());
+    let level = Entity::new(Entity::root())
+        .with(VirtualCamera::default())
+        .with(Pos(Vec2::ZERO))
+        .with(CameraKeepArea::new(Vec2::new(1920., 1080.)));
 
     // Create palette
     let mut palette = level.add(TilePalette::default());
@@ -46,7 +52,7 @@ pub fn world_init(world: &mut World) {
     register_gfx(level);
 
     // Spawn the player
-    let player = spawn_player(Entity::root());
+    let player = spawn_player(level);
     player.get::<Pos>().0 = Vec2::new(100., 200.);
 }
 
@@ -56,16 +62,22 @@ pub fn world_tick(world: &mut World) {
     Entity::flush();
 
     // Update
+    sys_update_virtual_cameras();
     sys_kinematic_start_of_frame();
     sys_update_players();
     sys_apply_kinematics();
 
     // Render
-    for layer in &find_gfx::<TileRenderer>(Entity::root()) {
-        layer.get::<TileRenderer>().render();
-    }
+    for camera in &find_gfx::<VirtualCamera>(Entity::root()) {
+        let camera_obj = camera.get::<VirtualCamera>();
+        let _guard = camera_obj.bind();
 
-    for solid in &find_gfx::<SolidRenderer>(Entity::root()) {
-        solid.get::<SolidRenderer>().render();
+        for layer in &find_gfx::<TileRenderer>(camera) {
+            layer.get::<TileRenderer>().render(camera_obj.focus());
+        }
+
+        for solid in &find_gfx::<SolidRenderer>(camera) {
+            solid.get::<SolidRenderer>().render();
+        }
     }
 }
