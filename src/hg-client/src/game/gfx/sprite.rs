@@ -1,27 +1,29 @@
 use hg_ecs::{component, Obj};
-use macroquad::{color::Color, math::Rect, shapes::draw_rectangle};
+use macroquad::{color::Color, math::Vec2};
 
-use super::kinematic::Pos;
+use crate::{
+    game::kinematic::Pos,
+    utils::math::{Aabb, MqAabbExt},
+};
 
 #[derive(Debug, Clone)]
 pub struct SolidRenderer {
     pub color: Color,
-    pub rect: Rect,
+    pub aabb: Aabb,
 }
 
 impl SolidRenderer {
     pub fn new_centered(color: Color, size: f32) -> Self {
         Self {
             color,
-            rect: Rect::new(-size / 2., -size / 2., size, size),
+            aabb: Aabb::new_centered(Vec2::ZERO, Vec2::splat(size)),
         }
     }
 
     pub fn render(self: Obj<Self>) {
         let pos = self.entity().get::<Pos>();
-        let rect = self.rect.offset(pos.0);
 
-        draw_rectangle(rect.x, rect.y, rect.w, rect.h, self.color);
+        self.aabb.translated(pos.0).draw_solid(self.color);
     }
 }
 

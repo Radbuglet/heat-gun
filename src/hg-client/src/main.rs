@@ -7,6 +7,7 @@ use driver::{world_init, world_tick};
 
 pub mod driver;
 pub mod game;
+pub mod utils;
 
 #[macroquad::main("Heat Gun")]
 async fn main() {

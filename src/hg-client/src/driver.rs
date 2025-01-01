@@ -8,11 +8,12 @@ use crate::game::{
     gfx::{
         bus::{find_gfx, register_gfx},
         camera::{sys_update_virtual_cameras, CameraKeepArea, VirtualCamera},
+        sprite::SolidRenderer,
+        tile::{PaletteVisuals, TileRenderer},
     },
     kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame, Pos},
     player::{spawn_player, sys_update_players},
-    sprite::SolidRenderer,
-    tile::{PaletteVisuals, TileConfig, TileLayer, TilePalette, TileRenderer},
+    tile::{TileConfig, TileLayer, TilePalette},
 };
 
 pub fn world_init(world: &mut World) {
@@ -37,10 +38,7 @@ pub fn world_init(world: &mut World) {
     );
 
     // Create background layer
-    let mut background = level.add(TileLayer::new(
-        TileConfig::new(Vec2::ZERO, Vec2::splat(50.)),
-        palette,
-    ));
+    let mut background = level.add(TileLayer::new(TileConfig::from_size(50.), palette));
 
     for x in 0..10 {
         background.map.set(IVec2::splat(x) - IVec2::Y, grass);

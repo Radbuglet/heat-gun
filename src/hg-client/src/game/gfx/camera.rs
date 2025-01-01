@@ -1,18 +1,18 @@
 use hg_ecs::{component, Obj, Query};
 use macroquad::{
     camera::{pop_camera_state, push_camera_state, set_camera, Camera},
-    math::{Mat4, Rect, Vec2},
+    math::{Mat4, Vec2},
     miniquad::window::screen_size,
     texture::RenderPass,
 };
 
-use crate::game::kinematic::Pos;
+use crate::{game::kinematic::Pos, utils::math::Aabb};
 
 // === VirtualCamera === //
 
 #[derive(Debug, Clone, Default)]
 pub struct VirtualCamera {
-    focus: Option<Rect>,
+    focus: Option<Aabb>,
 }
 
 component!(VirtualCamera);
@@ -22,13 +22,13 @@ impl VirtualCamera {
         self.focus = None;
     }
 
-    pub fn focus(&self) -> Rect {
+    pub fn focus(&self) -> Aabb {
         self.focus.expect("focus never set")
     }
 
-    pub fn set_focus(&mut self, rect: Rect) {
+    pub fn set_focus(&mut self, aabb: Aabb) {
         assert!(self.focus.is_none(), "focus already set");
-        self.focus = Some(rect);
+        self.focus = Some(aabb);
     }
 
     pub fn bind(&self) -> VirtualCameraGuard {
@@ -112,11 +112,6 @@ pub fn sys_update_virtual_cameras() {
 
         let size = screen_size * screen_scale;
 
-        camera.set_focus(Rect::new(
-            center.x - size.x / 2.,
-            center.y - size.y / 2.,
-            size.x,
-            size.y,
-        ));
+        camera.set_focus(Aabb::new_centered(center, size));
     }
 }
