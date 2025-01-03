@@ -6,6 +6,7 @@ use macroquad::{
 };
 
 use super::{
+    collide::bus::{register_collider, Collider, ColliderMask, ColliderMat},
     gfx::{bus::register_gfx, sprite::SolidRenderer},
     kinematic::{KinematicProps, Pos, Vel},
 };
@@ -26,9 +27,12 @@ pub fn spawn_player(parent: Entity) -> Entity {
             friction: 0.98,
         })
         .with(PlayerController::default())
-        .with(SolidRenderer::new_centered(RED, 50.));
+        .with(SolidRenderer::new_centered(RED, 50.))
+        .with(Collider::new(ColliderMask::ALL, ColliderMat::Solid));
 
     register_gfx(player);
+    register_collider(player.get());
+
     player
 }
 

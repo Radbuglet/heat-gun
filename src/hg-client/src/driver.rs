@@ -5,6 +5,7 @@ use macroquad::{
 };
 
 use crate::game::{
+    collide::bus::ColliderBus,
     gfx::{
         bus::{find_gfx, register_gfx},
         camera::{sys_update_virtual_cameras, CameraKeepArea, VirtualCamera},
@@ -23,7 +24,8 @@ pub fn world_init(world: &mut World) {
     let level = Entity::new(Entity::root())
         .with(VirtualCamera::default())
         .with(Pos(Vec2::ZERO))
-        .with(CameraKeepArea::new(Vec2::new(1920., 1080.)));
+        .with(CameraKeepArea::new(Vec2::new(1920., 1080.)))
+        .with(ColliderBus::default());
 
     // Create palette
     let mut palette = level.add(TilePalette::default());

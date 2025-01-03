@@ -2,126 +2,111 @@
 //!
 //! [bvh-gdc]: https://box2d.org/files/ErinCatto_DynamicBVH_GDC2019.pdf
 
-use core::f32;
-use std::{cmp, collections::BinaryHeap};
+use std::{cmp, collections::BinaryHeap, fmt};
 
+use derive_where::derive_where;
+use smallvec::SmallVec;
 use thunderdome::{Arena, Index};
+
+use super::Aabb;
 
 // === GenericAabb === //
 
 pub trait GenericAabb: Copy {
-    fn volume(self) -> f32;
-
     fn surface_area(self) -> f32;
 
     fn union(self, other: Self) -> Self;
 }
 
-// === AabbTree === //
+impl GenericAabb for Aabb {
+    fn surface_area(self) -> f32 {
+        (self.w() + self.h()) * 2.
+    }
+
+    fn union(self, other: Self) -> Self {
+        self.union(other)
+    }
+}
+
+// === BhvTree === //
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
-pub struct AabbNodeIdx(Index);
+pub struct BvhNodeIdx(Index);
 
-impl AabbNodeIdx {
+impl BvhNodeIdx {
     pub const DANGLING: Self = Self(Index::DANGLING);
 }
 
-pub struct AabbTree<A, T> {
+pub struct Bhv<A, T> {
     nodes: Arena<Node<A, T>>,
-    root: Option<AabbNodeIdx>,
+    root: Option<BvhNodeIdx>,
 }
 
 struct Node<A, T> {
     aabb: A,
-    parent: Option<AabbNodeIdx>,
+    parent: Option<BvhNodeIdx>,
     kind: NodeKind<T>,
 }
 
 enum NodeKind<T> {
-    Branch { children: [AabbNodeIdx; 2] },
+    Branch { children: [BvhNodeIdx; 2] },
     Leaf { value: T },
 }
 
-impl<A, T> AabbTree<A, T> {
+impl<A, T> fmt::Debug for Bhv<A, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AabbTree").finish_non_exhaustive()
+    }
+}
+
+impl<A, T> Bhv<A, T> {
     pub const fn new() -> Self {
         Self {
             nodes: Arena::new(),
             root: None,
         }
     }
+
+    pub fn opt_node(&self, idx: BvhNodeIdx) -> Option<BvhNodeView<'_, A, T>> {
+        self.nodes.get(idx.0).map(|node| BvhNodeView {
+            tree: self,
+            node,
+            idx,
+        })
+    }
+
+    pub fn node(&self, idx: BvhNodeIdx) -> BvhNodeView<'_, A, T> {
+        self.opt_node(idx).expect("node does not exist")
+    }
+
+    pub fn root_idx(&self) -> Option<BvhNodeIdx> {
+        self.root
+    }
+
+    pub fn root(&self) -> Option<BvhNodeView<'_, A, T>> {
+        self.root_idx().map(|idx| self.node(idx))
+    }
 }
 
-impl<A, T> Default for AabbTree<A, T> {
+impl<A, T> Default for Bhv<A, T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<A, T> AabbTree<A, T>
+impl<A, T> Bhv<A, T>
 where
     A: GenericAabb,
 {
-    // === Getters === //
-
-    pub fn root(&self) -> Option<AabbNodeIdx> {
-        self.root
-    }
-
-    pub fn aabb(&self, node: AabbNodeIdx) -> A {
-        self.nodes[node.0].aabb
-    }
-
-    pub fn opt_value(&self, node: AabbNodeIdx) -> Option<&T> {
-        match &self.nodes[node.0].kind {
-            NodeKind::Leaf { value } => Some(value),
-            NodeKind::Branch { .. } => None,
-        }
-    }
-
-    pub fn value(&self, node: AabbNodeIdx) -> &T {
-        self.opt_value(node).expect("node is not a leaf")
-    }
-
-    pub fn parent(&self, node: AabbNodeIdx) -> Option<AabbNodeIdx> {
-        self.nodes[node.0].parent
-    }
-
-    pub fn opt_children(&self, node: AabbNodeIdx) -> Option<[AabbNodeIdx; 2]> {
-        match self.nodes[node.0].kind {
-            NodeKind::Branch { children } => Some(children),
-            NodeKind::Leaf { .. } => None,
-        }
-    }
-
-    pub fn children(&self, node: AabbNodeIdx) -> [AabbNodeIdx; 2] {
-        self.opt_children(node).expect("node is not a branch")
-    }
-
-    pub fn is_leaf(&self, node: AabbNodeIdx) -> bool {
-        match self.nodes[node.0].kind {
-            NodeKind::Branch { .. } => false,
-            NodeKind::Leaf { .. } => true,
-        }
-    }
-
-    pub fn is_branch(&self, node: AabbNodeIdx) -> bool {
-        match self.nodes[node.0].kind {
-            NodeKind::Branch { .. } => true,
-            NodeKind::Leaf { .. } => false,
-        }
-    }
-
-    fn children_mut(&mut self, node: AabbNodeIdx) -> &mut [AabbNodeIdx; 2] {
+    fn children_mut(&mut self, node: BvhNodeIdx) -> &mut [BvhNodeIdx; 2] {
         match &mut self.nodes[node.0].kind {
             NodeKind::Branch { children } => children,
             NodeKind::Leaf { .. } => unreachable!(),
         }
     }
 
-    // === Mutators === //
-
-    pub fn insert(&mut self, aabb: A, value: T) -> AabbNodeIdx {
-        let leaf = AabbNodeIdx(self.nodes.insert(Node {
+    pub fn insert(&mut self, aabb: A, value: T) -> BvhNodeIdx {
+        let leaf = BvhNodeIdx(self.nodes.insert(Node {
             aabb,
             parent: None,
             kind: NodeKind::Leaf { value },
@@ -131,8 +116,11 @@ where
         leaf
     }
 
-    pub fn remove(&mut self, leaf: AabbNodeIdx) -> T {
-        assert!(self.is_leaf(leaf), "attempted to remove a non-leaf node");
+    pub fn remove(&mut self, leaf: BvhNodeIdx) -> T {
+        assert!(
+            self.node(leaf).is_leaf(),
+            "attempted to remove a non-leaf node"
+        );
 
         // Orphan simply removes the node from the tree without freeing it.
         self.orphan_leaf(leaf);
@@ -147,9 +135,9 @@ where
         }
     }
 
-    pub fn update_aabb(&mut self, leaf: AabbNodeIdx, new_aabb: A) {
+    pub fn update_aabb(&mut self, leaf: BvhNodeIdx, new_aabb: A) {
         assert!(
-            self.is_leaf(leaf),
+            self.node(leaf).is_leaf(),
             "attempted to update the AABB of a non-leaf node"
         );
 
@@ -159,8 +147,8 @@ where
         self.insert_leaf(leaf);
     }
 
-    fn insert_leaf(&mut self, leaf: AabbNodeIdx) {
-        debug_assert!(self.is_leaf(leaf));
+    fn insert_leaf(&mut self, leaf: BvhNodeIdx) {
+        debug_assert!(self.node(leaf).is_leaf());
 
         if self.root.is_none() {
             self.root = Some(leaf);
@@ -177,7 +165,7 @@ where
         let new_aabb = leaf_aabb.union(self.nodes[best_sibling.0].aabb);
 
         // `old_parent` <- `new_parent` -> `children`
-        let new_parent = AabbNodeIdx(self.nodes.insert(Node {
+        let new_parent = BvhNodeIdx(self.nodes.insert(Node {
             aabb: new_aabb,
             parent: old_parent,
             kind: NodeKind::Branch {
@@ -233,7 +221,7 @@ where
         }
     }
 
-    fn find_best_sibling(&self, aabb: A) -> AabbNodeIdx {
+    fn find_best_sibling(&self, aabb: A) -> BvhNodeIdx {
         // The total cost of a given tree is defined as the sum of the surface areas of all non-root
         // branch nodes. We ignore leaf nodes and root nodes because their cost does not change based
         // on the organization of a given set of leaf AABBs into a tree.
@@ -274,8 +262,8 @@ where
         // cost.
 
         // Let us define our `sa` and `dsa` functions.
-        let sa = |idx: AabbNodeIdx| self.nodes[idx.0].aabb.union(aabb).surface_area();
-        let dsa = |idx: AabbNodeIdx| sa(idx) - self.nodes[idx.0].aabb.surface_area();
+        let sa = |idx: BvhNodeIdx| self.nodes[idx.0].aabb.union(aabb).surface_area();
+        let dsa = |idx: BvhNodeIdx| sa(idx) - self.nodes[idx.0].aabb.surface_area();
 
         // This is a surprise tool to help us later.
         let aabb_sa = aabb.surface_area();
@@ -283,7 +271,7 @@ where
         // We're going to implement this routine by iteratively exploring candidate nodes from most
         // to least promising and only queuing up children of those candidates as new candidates if
         // they could yield a cost lower than the best one we found.
-        let mut best_node = AabbNodeIdx::DANGLING;
+        let mut best_node = BvhNodeIdx::DANGLING;
         let mut best_cost = f32::INFINITY;
 
         let mut queue = BinaryHeap::new();
@@ -361,7 +349,7 @@ where
         best_node
     }
 
-    fn rotate_branch_optimally(&mut self, branch: AabbNodeIdx) {
+    fn rotate_branch_optimally(&mut self, branch: BvhNodeIdx) {
         // This routine attempts to maintain rough tree balance by performing tree rotations on the
         // ancestors of an inserted node that reduce the cost of the tree.
         //
@@ -455,7 +443,7 @@ where
 
         let main = children[main_idx];
         let other = children[other_idx];
-        let grandchild = self.children(main)[grandchild_idx];
+        let grandchild = self.node(main).branch_children_idx()[grandchild_idx];
 
         // Here's the swap we're trying to do...
         //
@@ -484,8 +472,8 @@ where
         self.nodes[grandchild.0].parent = Some(branch);
     }
 
-    fn orphan_leaf(&mut self, leaf: AabbNodeIdx) {
-        debug_assert!(self.is_leaf(leaf));
+    fn orphan_leaf(&mut self, leaf: BvhNodeIdx) {
+        debug_assert!(self.node(leaf).is_leaf());
 
         let Some(parent) = self.nodes[leaf.0].parent else {
             // There's only one node in this graph, `node`, and it's a root. Remove the reference.
@@ -541,7 +529,7 @@ where
 
 #[derive(Debug, Copy, Clone)]
 struct FbsCandidate {
-    node: AabbNodeIdx,
+    node: BvhNodeIdx,
     min_cost: f32,
     inherited_cost: f32,
 }
@@ -563,5 +551,107 @@ impl Ord for FbsCandidate {
 impl PartialOrd for FbsCandidate {
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+// === BvhNodeView === //
+
+#[derive_where(Copy, Clone)]
+pub struct BvhNodeView<'a, A, T> {
+    tree: &'a Bhv<A, T>,
+    node: &'a Node<A, T>,
+    idx: BvhNodeIdx,
+}
+
+impl<'a, A, T> BvhNodeView<'a, A, T> {
+    pub fn tree(self) -> &'a Bhv<A, T> {
+        self.tree
+    }
+
+    pub fn index(self) -> BvhNodeIdx {
+        self.idx
+    }
+
+    fn make_view(self, idx: BvhNodeIdx) -> BvhNodeView<'a, A, T> {
+        self.tree.node(idx)
+    }
+
+    pub fn parent_idx(self) -> Option<BvhNodeIdx> {
+        self.node.parent
+    }
+
+    pub fn parent(self) -> Option<BvhNodeView<'a, A, T>> {
+        self.parent_idx().map(|parent| self.make_view(parent))
+    }
+
+    pub fn opt_children_idx(self) -> Option<[BvhNodeIdx; 2]> {
+        match self.node.kind {
+            NodeKind::Branch { children } => Some(children),
+            NodeKind::Leaf { .. } => None,
+        }
+    }
+
+    pub fn branch_children_idx(self) -> [BvhNodeIdx; 2] {
+        self.opt_children_idx().expect("node is not a branch")
+    }
+
+    pub fn children_idx(self) -> SmallVec<[BvhNodeIdx; 2]> {
+        self.opt_children_idx()
+            .map_or(SmallVec::new(), |v| SmallVec::from_iter(v))
+    }
+
+    pub fn opt_children(self) -> Option<[BvhNodeView<'a, A, T>; 2]> {
+        self.opt_children_idx()
+            .map(|children| children.map(|child| self.make_view(child)))
+    }
+
+    pub fn children(self) -> SmallVec<[BvhNodeView<'a, A, T>; 2]> {
+        self.children_idx()
+            .into_iter()
+            .map(|idx| self.make_view(idx))
+            .collect()
+    }
+
+    pub fn branch_children(self) -> [BvhNodeView<'a, A, T>; 2] {
+        self.branch_children_idx()
+            .map(|child| self.make_view(child))
+    }
+
+    pub fn opt_value(self) -> Option<&'a T> {
+        match &self.node.kind {
+            NodeKind::Leaf { value } => Some(value),
+            NodeKind::Branch { .. } => None,
+        }
+    }
+
+    pub fn aabb_ref(self) -> &'a A {
+        &self.node.aabb
+    }
+
+    pub fn value(self) -> &'a T {
+        self.opt_value().expect("node is not a leaf")
+    }
+
+    pub fn is_leaf(self) -> bool {
+        match self.node.kind {
+            NodeKind::Branch { .. } => false,
+            NodeKind::Leaf { .. } => true,
+        }
+    }
+
+    pub fn is_branch(self) -> bool {
+        match self.node.kind {
+            NodeKind::Branch { .. } => true,
+            NodeKind::Leaf { .. } => false,
+        }
+    }
+}
+
+impl<'a, A, T> BvhNodeView<'a, A, T>
+where
+    A: GenericAabb,
+{
+    pub fn aabb(self) -> A {
+        self.node.aabb
     }
 }

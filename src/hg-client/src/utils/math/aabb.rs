@@ -172,6 +172,13 @@ impl Aabb {
             },
         }
     }
+
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            min: self.min.min(other.min),
+            max: self.max.max(other.max),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]

@@ -160,8 +160,8 @@ impl Entity {
         EntityStore::fetch().entities.contains(self.0)
     }
 
-    pub fn parent(self) -> Option<Entity> {
-        EntityStore::fetch().entities[self.0].parent
+    pub fn parent(self, cx: Bundle<AccessResRef<'_, EntityStore>>) -> Option<Entity> {
+        EntityStore::fetch(pack!(cx)).entities[self.0].parent
     }
 
     pub fn children<'a>(self, cx: Bundle<AccessResRef<'a, EntityStore>>) -> EntityChildren {
@@ -274,6 +274,35 @@ impl Entity {
         self.try_get(pack!(cx)).unwrap_or_else(|| {
             panic!(
                 "{self:?} does not have component of type `{}`",
+                type_name::<T>()
+            )
+        })
+    }
+
+    pub fn try_deep_get<T: Component>(
+        self,
+        cx: Bundle<(&WORLD, &AccessRes<EntityStore>, &AccessComp<T>)>,
+    ) -> Option<Obj<T>> {
+        let mut iter = Some(self);
+
+        while let Some(curr) = iter {
+            if let Some(obj) = curr.try_get(pack!(cx)) {
+                return Some(obj);
+            }
+
+            iter = curr.parent(pack!(cx));
+        }
+
+        None
+    }
+
+    pub fn deep_get<T: Component>(
+        self,
+        cx: Bundle<(&WORLD, &AccessRes<EntityStore>, &AccessComp<T>)>,
+    ) -> Obj<T> {
+        self.try_deep_get(pack!(cx)).unwrap_or_else(|| {
+            panic!(
+                "{self:?} and its ancestry do not have component of type `{}`",
                 type_name::<T>()
             )
         })

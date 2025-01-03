@@ -3,33 +3,95 @@ use std::{
     ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not},
 };
 
-use hg_ecs::{component, Entity, Obj, World};
-use macroquad::math::Vec2;
+use hg_ecs::{component, Entity, Obj, World, WORLD};
 
-use crate::utils::math::Aabb;
+use crate::utils::math::{Aabb, Bhv, BvhNodeIdx};
 
 // === ColliderBus === //
 
-#[derive(Debug)]
-pub struct ColliderBus {}
+#[derive(Debug, Default)]
+pub struct ColliderBus {
+    pub tree: Bhv<Aabb, Obj<Collider>>,
+}
 
 component!(ColliderBus);
 
 impl ColliderBus {
-    pub fn register(mut self: Obj<Self>, collider: Obj<Collider>) {
-        todo!()
+    pub fn register(mut self: Obj<Self>, mut collider: Obj<Collider>) {
+        assert!(collider.bus.is_none());
+
+        let bhv_idx = self.tree.insert(collider.aabb, collider);
+        collider.bus = Some(self);
+        collider.bhv_idx = bhv_idx;
+    }
+
+    pub fn lookup(self: Obj<Self>, lookup: Aabb, mask: ColliderMask) -> Vec<Entity> {
+        let mut queue = self.tree.root_idx().into_iter().collect::<Vec<_>>();
+        let mut filtered = Vec::new();
+
+        while let Some(curr) = queue.pop() {
+            let curr = self.tree.node(curr);
+
+            if !curr.aabb().intersects(lookup) {
+                continue;
+            }
+
+            let Some(&candidate) = curr.opt_value() else {
+                queue.extend(curr.children_idx());
+                continue;
+            };
+
+            let candidate_ent = candidate.entity();
+
+            if !candidate.mask.intersects(mask) {
+                continue;
+            }
+
+            let did_pass = match candidate.material {
+                ColliderMat::Solid => true,
+                ColliderMat::Disabled => false,
+                ColliderMat::Custom(custom) => {
+                    (custom.check_aabb)(&mut WORLD, candidate_ent, lookup)
+                }
+            };
+
+            if !did_pass {
+                continue;
+            }
+
+            filtered.push(candidate_ent);
+        }
+
+        filtered
     }
 }
 
 #[derive(Debug)]
 pub struct Collider {
     bus: Option<Obj<ColliderBus>>,
+    bhv_idx: BvhNodeIdx,
     aabb: Aabb,
     mask: ColliderMask,
     material: ColliderMat,
 }
 
 impl Collider {
+    pub fn new(mask: ColliderMask, material: ColliderMat) -> Self {
+        Self {
+            bus: None,
+            bhv_idx: BvhNodeIdx::DANGLING,
+            aabb: Aabb::ZERO,
+            mask,
+            material,
+        }
+    }
+
+    pub fn unregister(&mut self) {
+        if let Some(mut bus) = self.bus.take() {
+            bus.tree.remove(self.bhv_idx);
+        }
+    }
+
     pub fn aabb(&self) -> Aabb {
         self.aabb
     }
@@ -37,7 +99,9 @@ impl Collider {
     pub fn set_aabb(&mut self, aabb: Aabb) {
         self.aabb = aabb;
 
-        // TODO: Update bus
+        if let Some(mut bus) = self.bus {
+            bus.tree.update_aabb(self.bhv_idx, aabb);
+        }
     }
 
     pub fn mask(&self) -> ColliderMask {
@@ -58,6 +122,13 @@ impl Collider {
 }
 
 component!(Collider);
+
+pub fn register_collider(collider: Obj<Collider>) {
+    collider
+        .entity()
+        .deep_get::<ColliderBus>()
+        .register(collider);
+}
 
 // === ColliderMask === //
 
@@ -170,7 +241,7 @@ pub enum ColliderMat {
 
 pub struct CustomColliderMat {
     pub name: &'static str,
-    pub check_point: fn(&mut World, Entity, Vec2) -> bool,
+    pub check_aabb: fn(&mut World, Entity, Aabb) -> bool,
 }
 
 impl fmt::Debug for CustomColliderMat {
