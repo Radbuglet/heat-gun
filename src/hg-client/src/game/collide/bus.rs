@@ -3,7 +3,7 @@ use std::{
     ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not},
 };
 
-use hg_ecs::{component, Entity, Obj, World, WORLD};
+use hg_ecs::{component, query::query_removed, Entity, Obj, World, WORLD};
 
 use crate::utils::math::{Aabb, Bhv, BvhNodeIdx};
 
@@ -249,5 +249,13 @@ impl fmt::Debug for CustomColliderMat {
         f.debug_struct("CustomColliderMat")
             .field("name", &self.name)
             .finish_non_exhaustive()
+    }
+}
+
+// === Systems === //
+
+pub fn sys_flush_colliders() {
+    for mut collider in query_removed::<Collider>() {
+        collider.unregister();
     }
 }

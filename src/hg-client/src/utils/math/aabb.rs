@@ -26,6 +26,11 @@ impl Aabb {
         max: Vec2::ONE,
     };
 
+    pub const EVERYWHERE: Self = Self {
+        min: Vec2::NEG_INFINITY,
+        max: Vec2::INFINITY,
+    };
+
     pub fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
         Self::new_sized(Vec2::new(x, y), Vec2::new(w, h))
     }

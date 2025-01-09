@@ -5,8 +5,13 @@ use macroquad::{
     math::{FloatExt, Vec2},
 };
 
+use crate::utils::math::Aabb;
+
 use super::{
-    collide::bus::{register_collider, Collider, ColliderMask, ColliderMat},
+    collide::{
+        bus::{register_collider, Collider, ColliderMask, ColliderMat},
+        update::ColliderFollows,
+    },
     gfx::{bus::register_gfx, sprite::SolidRenderer},
     kinematic::{KinematicProps, Pos, Vel},
 };
@@ -29,6 +34,11 @@ pub fn spawn_player(parent: Entity) -> Entity {
         .with(PlayerController::default())
         .with(SolidRenderer::new_centered(RED, 50.))
         .with(Collider::new(ColliderMask::ALL, ColliderMat::Solid));
+
+    player.with(ColliderFollows {
+        target: player.get(),
+        aabb: Aabb::new_centered(Vec2::ZERO, Vec2::splat(50.)),
+    });
 
     register_gfx(player);
     register_collider(player.get());

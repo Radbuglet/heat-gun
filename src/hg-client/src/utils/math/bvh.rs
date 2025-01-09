@@ -5,6 +5,7 @@
 use std::{cmp, collections::BinaryHeap, fmt};
 
 use derive_where::derive_where;
+use hg_utils::fmt::FmtFn;
 use smallvec::SmallVec;
 use thunderdome::{Arena, Index};
 
@@ -42,12 +43,14 @@ pub struct Bhv<A, T> {
     root: Option<BvhNodeIdx>,
 }
 
+#[derive(Debug)]
 struct Node<A, T> {
     aabb: A,
     parent: Option<BvhNodeIdx>,
     kind: NodeKind<T>,
 }
 
+#[derive(Debug)]
 enum NodeKind<T> {
     Branch { children: [BvhNodeIdx; 2] },
     Leaf { value: T },
@@ -55,7 +58,7 @@ enum NodeKind<T> {
 
 impl<A, T> fmt::Debug for Bhv<A, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AabbTree").finish_non_exhaustive()
+        f.debug_struct("Bhv").finish_non_exhaustive()
     }
 }
 
@@ -152,6 +155,7 @@ where
 
         if self.root.is_none() {
             self.root = Some(leaf);
+            return;
         }
 
         // Stage 1: find the best sibling for the new leaf
@@ -222,6 +226,8 @@ where
     }
 
     fn find_best_sibling(&self, aabb: A) -> BvhNodeIdx {
+        let root = self.root.unwrap();
+
         // The total cost of a given tree is defined as the sum of the surface areas of all non-root
         // branch nodes. We ignore leaf nodes and root nodes because their cost does not change based
         // on the organization of a given set of leaf AABBs into a tree.
@@ -271,12 +277,13 @@ where
         // We're going to implement this routine by iteratively exploring candidate nodes from most
         // to least promising and only queuing up children of those candidates as new candidates if
         // they could yield a cost lower than the best one we found.
-        let mut best_node = BvhNodeIdx::DANGLING;
+        //
+        // In the edge case where the `root` node has an infinite cost, we want to let `best_node`
+        // get set to the `root`, even if the cost found is never less than infinity.
+        let mut best_node = root;
         let mut best_cost = f32::INFINITY;
 
         let mut queue = BinaryHeap::new();
-
-        let root = self.root.unwrap();
 
         queue.push(FbsCandidate {
             node: root,
@@ -653,5 +660,29 @@ where
 {
     pub fn aabb(self) -> A {
         self.node.aabb
+    }
+}
+
+// === Formatters === //
+
+pub struct BhvFmtRaw<'a, A, T>(pub &'a Bhv<A, T>);
+
+impl<A: fmt::Debug, T: fmt::Debug> fmt::Debug for BhvFmtRaw<'_, A, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Bhv")
+            .field(
+                "nodes",
+                &FmtFn(|f| {
+                    let mut f = f.debug_map();
+
+                    for (idx, node) in self.0.nodes.iter() {
+                        f.entry(&idx.slot(), node);
+                    }
+
+                    f.finish()
+                }),
+            )
+            .field("root", &self.0.root)
+            .finish()
     }
 }

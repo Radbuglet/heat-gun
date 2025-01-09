@@ -13,16 +13,24 @@ pub mod utils;
 
 #[macroquad::main("Heat Gun")]
 async fn main() {
-    let mut world = World::new();
-
-    world_init(&mut world);
+    let Ok(mut world) = catch_unwind(AssertUnwindSafe(|| {
+        let mut world = World::new();
+        world_init(&mut world);
+        world
+    })) else {
+        return;
+    };
 
     while !is_quit_requested() {
-        if catch_unwind(AssertUnwindSafe(|| {
+        let crashed = catch_unwind(AssertUnwindSafe(|| {
             world_tick(&mut world);
-        })).is_err() {
+        }))
+        .is_err();
+
+        if crashed {
             return;
         }
+
         next_frame().await;
     }
 }

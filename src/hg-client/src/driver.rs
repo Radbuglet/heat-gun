@@ -1,21 +1,28 @@
-use hg_ecs::{bind, query::query_removed, Entity, World};
+use hg_ecs::{bind, Entity, World};
 use macroquad::{
     color::{GRAY, GREEN},
     math::{IVec2, Vec2},
 };
 
-use crate::game::{
-    collide::bus::ColliderBus,
-    debug::sys_update_debug,
-    gfx::{
-        bus::{find_gfx, register_gfx},
-        camera::{sys_update_virtual_cameras, CameraKeepArea, VirtualCamera},
-        sprite::SolidRenderer,
-        tile::{PaletteVisuals, TileRenderer},
+use crate::{
+    game::{
+        collide::{
+            bus::{register_collider, sys_flush_colliders, Collider, ColliderBus, ColliderMask},
+            tile::TileCollider,
+            update::sys_update_colliders,
+        },
+        debug::sys_update_debug,
+        gfx::{
+            bus::{find_gfx, register_gfx},
+            camera::{sys_update_virtual_cameras, CameraKeepArea, VirtualCamera},
+            sprite::SolidRenderer,
+            tile::{PaletteVisuals, TileRenderer},
+        },
+        kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame, Pos},
+        player::{spawn_player, sys_update_players},
+        tile::{TileConfig, TileLayer, TilePalette},
     },
-    kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame, Pos},
-    player::{spawn_player, sys_update_players, PlayerController},
-    tile::{TileConfig, TileLayer, TilePalette},
+    utils::math::Aabb,
 };
 
 pub fn world_init(world: &mut World) {
@@ -52,6 +59,13 @@ pub fn world_init(world: &mut World) {
     level.add(TileRenderer::new(vec![background]));
     register_gfx(level);
 
+    // Create collider
+    let mut collider = level.add(Collider::new(ColliderMask::ALL, TileCollider::MATERIAL));
+    level.with(TileCollider::new(vec![background]));
+
+    collider.set_aabb(Aabb::EVERYWHERE);
+    register_collider(collider);
+
     // Spawn the player
     let player = spawn_player(level);
     player.get::<Pos>().0 = Vec2::new(100., 200.);
@@ -67,6 +81,7 @@ pub fn world_tick(world: &mut World) {
     sys_kinematic_start_of_frame();
     sys_update_players();
     sys_apply_kinematics();
+    sys_update_colliders();
     sys_update_debug();
 
     // Render
@@ -87,7 +102,5 @@ pub fn world_tick(world: &mut World) {
 pub fn world_flush(world: &mut World) {
     bind!(world);
 
-    for pc in query_removed::<PlayerController>() {
-        eprintln!("Just died:\n{:#?}", pc.entity().debug());
-    }
+    sys_flush_colliders();
 }
