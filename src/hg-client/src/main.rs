@@ -1,6 +1,8 @@
 #![feature(arbitrary_self_types)]
 #![feature(context_injection)]
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
 use hg_ecs::World;
 use macroquad::{input::is_quit_requested, window::next_frame};
 use driver::{world_init, world_tick};
@@ -16,7 +18,11 @@ async fn main() {
     world_init(&mut world);
 
     while !is_quit_requested() {
-        world_tick(&mut world);
+        if catch_unwind(AssertUnwindSafe(|| {
+            world_tick(&mut world);
+        })).is_err() {
+            return;
+        }
         next_frame().await;
     }
 }

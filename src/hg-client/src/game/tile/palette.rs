@@ -42,9 +42,13 @@ impl TilePalette {
 // === PaletteCache === //
 
 pub type CacheLookupCx<'a, V> = (
-    &'a WORLD,
-    &'a AccessRes<EntityStore>,
-    &'a AccessComp<TilePalette>,
+    // Concrete
+    (
+        &'a WORLD,
+        &'a AccessRes<EntityStore>,
+        &'a AccessComp<TilePalette>,
+    ),
+    // Generic
     &'a AccessComp<V>,
 );
 
@@ -78,6 +82,9 @@ impl<V: Component> PaletteCache for DensePaletteCache<V> {
     }
 
     fn lookup(&mut self, id: TileId, cx: Bundle<CacheLookupCx<'_, Self::Item>>) -> Obj<Self::Item> {
+        let (conc, cx) = cx.split();
+        let static ..conc;
+
         if self.list.len() <= id.usize() {
             self.list.resize(id.usize() + 1, None);
         }
@@ -88,11 +95,8 @@ impl<V: Component> PaletteCache for DensePaletteCache<V> {
             return item;
         }
 
-        *slot.insert(
-            self.palette
-                .deref_cx(pack!(cx))
-                .lookup(id)
-                .get::<V>(pack!(cx)),
-        )
+        let resolved = self.palette.deref_cx().lookup(id).get::<V>(pack!(cx));
+        let _ = slot.insert(resolved);
+        resolved
     }
 }

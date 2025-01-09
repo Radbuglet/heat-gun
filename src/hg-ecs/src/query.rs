@@ -1,10 +1,10 @@
-use std::{ptr::null, rc::Rc, vec};
+use std::{fmt, marker::PhantomData, mem::transmute, ptr::null, rc::Rc, slice, vec};
 
 use thunderdome::Index;
 
 use crate::{
     archetype::{ArchetypeId, ComponentId},
-    entity::{Component, EntityQueryState},
+    entity::{Component, EntityQueryState, EntityQueueState},
     Entity, Obj,
 };
 
@@ -355,3 +355,50 @@ macro_rules! impl_tup_query_result {
 }
 
 impl_tuples!(impl_tup_query_result; no_unit);
+
+// === ComponentsRemoved === //
+
+pub fn query_removed<T: Component>() -> ComponentsRemoved<T> {
+    ComponentsRemoved::new()
+}
+
+#[derive(Clone)]
+pub struct ComponentsRemoved<T: Component> {
+    _ty: PhantomData<fn(T) -> T>,
+    iter: slice::Iter<'static, Index>,
+    _queue: Rc<EntityQueueState>,
+}
+
+impl<T: Component> fmt::Debug for ComponentsRemoved<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ComponentsRemoved").finish_non_exhaustive()
+    }
+}
+
+impl<T: Component> ComponentsRemoved<T> {
+    fn empty_iter() -> slice::Iter<'static, Index> {
+        [].iter()
+    }
+
+    pub fn new() -> Self {
+        let queue = Entity::queue_state().clone();
+        let iter = queue
+            .to_remove
+            .get(&ComponentId::of::<T>())
+            .map_or(Self::empty_iter(), |(_set, vec)| vec.iter());
+
+        Self {
+            _ty: PhantomData,
+            iter: unsafe { transmute::<slice::Iter<'_, Index>, slice::Iter<'static, Index>>(iter) },
+            _queue: queue,
+        }
+    }
+}
+
+impl<T: Component> Iterator for ComponentsRemoved<T> {
+    type Item = Obj<T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().copied().map(Obj::<T>::from_raw)
+    }
+}

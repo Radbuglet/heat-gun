@@ -1,4 +1,4 @@
-use hg_ecs::{bind, Entity, World};
+use hg_ecs::{bind, query::query_removed, Entity, World};
 use macroquad::{
     color::{GRAY, GREEN},
     math::{IVec2, Vec2},
@@ -6,6 +6,7 @@ use macroquad::{
 
 use crate::game::{
     collide::bus::ColliderBus,
+    debug::sys_update_debug,
     gfx::{
         bus::{find_gfx, register_gfx},
         camera::{sys_update_virtual_cameras, CameraKeepArea, VirtualCamera},
@@ -13,7 +14,7 @@ use crate::game::{
         tile::{PaletteVisuals, TileRenderer},
     },
     kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame, Pos},
-    player::{spawn_player, sys_update_players},
+    player::{spawn_player, sys_update_players, PlayerController},
     tile::{TileConfig, TileLayer, TilePalette},
 };
 
@@ -59,13 +60,14 @@ pub fn world_init(world: &mut World) {
 pub fn world_tick(world: &mut World) {
     bind!(world);
 
-    Entity::flush();
+    Entity::flush(world_flush);
 
     // Update
     sys_update_virtual_cameras();
     sys_kinematic_start_of_frame();
     sys_update_players();
     sys_apply_kinematics();
+    sys_update_debug();
 
     // Render
     for camera in &find_gfx::<VirtualCamera>(Entity::root()) {
@@ -79,5 +81,13 @@ pub fn world_tick(world: &mut World) {
         for solid in &find_gfx::<SolidRenderer>(camera) {
             solid.get::<SolidRenderer>().render();
         }
+    }
+}
+
+pub fn world_flush(world: &mut World) {
+    bind!(world);
+
+    for pc in query_removed::<PlayerController>() {
+        eprintln!("Just died:\n{:#?}", pc.entity().debug());
     }
 }

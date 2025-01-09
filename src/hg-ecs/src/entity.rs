@@ -1,8 +1,9 @@
 use std::{
     any::type_name,
-    context::{pack, unpack, Bundle, DerefCx, DerefCxMut},
+    context::{pack, Bundle, BundleItemSet, DerefCx, DerefCxMut},
     fmt, iter,
     marker::PhantomData,
+    mem,
     ops::DerefMut,
     rc::Rc,
     slice,
@@ -14,7 +15,7 @@ use thunderdome::{Arena, Index};
 
 use crate::{
     archetype::{ArchetypeId, ArchetypeStore, ComponentId},
-    bind, resource,
+    resource,
     world::{can_format_entity, can_format_obj, ImmutableWorld, WorldFmt},
     AccessRes, AccessResRef, Resource, World, WORLD,
 };
@@ -48,6 +49,12 @@ pub struct EntityStore {
     ///
     /// This is only used to patch up `archetype_members` during a `flush`.
     dead_entities: FxHashSet<(ArchetypeId, u32)>,
+
+    // TODO: Document
+    target_queue_state: EntityQueueState,
+
+    // TODO: Document
+    view_queue_state: Rc<EntityQueueState>,
 }
 
 #[derive(Debug)]
@@ -61,7 +68,9 @@ struct EntityInfo {
     index_in_archetype: u32,
 
     /// The index of the node in its parent's `children` vector.
-    index_in_parent: u32,
+    ///
+    /// The MSB indicates whether the entity was condemned.
+    index_in_parent_bitor_condemned: u32,
 
     /// The parent of the entity. This is guaranteed to be alive.
     parent: Option<Entity>,
@@ -70,10 +79,51 @@ struct EntityInfo {
     children: EntityChildren,
 }
 
+impl EntityInfo {
+    fn index_in_parent(&self) -> u32 {
+        self.index_in_parent_bitor_condemned & !(1 << 31)
+    }
+
+    fn condemned(&self) -> bool {
+        self.index_in_parent_bitor_condemned >> 31 != 0
+    }
+
+    fn set_index_in_parent_unchecked(&mut self, idx: u32) {
+        self.index_in_parent_bitor_condemned &= 1 << 31;
+        self.index_in_parent_bitor_condemned |= idx;
+    }
+
+    fn set_index_in_parent(&mut self, idx: usize) {
+        assert!(idx < (1u32 << 31) as usize, "node has too many children");
+        self.set_index_in_parent_unchecked(idx as u32);
+    }
+
+    fn mark_condemned(&mut self) {
+        self.index_in_parent_bitor_condemned |= 1 << 31;
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct EntityQueryState {
     pub index_members: FxHashMap<ArchetypeId, Vec<Entity>>,
     pub comp_members: FxHashMap<(ArchetypeId, ComponentId), Vec<Index>>,
+}
+
+#[derive(Debug, Default)]
+pub struct EntityQueueState {
+    /// The set of entities which have been condemned to be destroyed.
+    pub condemned: Vec<Entity>,
+
+    /// The set of components condemned to be removed.
+    ///
+    /// The second vector is filled during queue normalization.
+    pub to_remove: FxHashMap<ComponentId, (FxHashSet<Entity>, Vec<Index>)>,
+}
+
+impl EntityQueueState {
+    pub fn is_empty(&self) -> bool {
+        self.condemned.is_empty()
+    }
 }
 
 impl Default for EntityStore {
@@ -85,6 +135,8 @@ impl Default for EntityStore {
             query_state: Rc::default(),
             reshaped_entities: FxHashMap::default(),
             dead_entities: FxHashSet::default(),
+            target_queue_state: EntityQueueState::default(),
+            view_queue_state: Rc::default(),
         };
 
         store.root = Entity::new_root(&mut store);
@@ -143,7 +195,7 @@ impl Entity {
     pub(crate) fn new_root(store: &mut EntityStore) -> Self {
         let index = store.entities.insert(EntityInfo {
             archetype: ArchetypeId::EMPTY,
-            index_in_parent: 0,
+            index_in_parent_bitor_condemned: 0,
             index_in_archetype: 0,
             parent: None,
             children: EntityChildren { vec: Rc::default() },
@@ -160,14 +212,12 @@ impl Entity {
         EntityStore::fetch().entities.contains(self.0)
     }
 
-    pub fn parent(self, cx: Bundle<AccessResRef<'_, EntityStore>>) -> Option<Entity> {
-        EntityStore::fetch(pack!(cx)).entities[self.0].parent
+    pub fn parent(self) -> Option<Entity> {
+        EntityStore::fetch().entities[self.0].parent
     }
 
-    pub fn children<'a>(self, cx: Bundle<AccessResRef<'a, EntityStore>>) -> EntityChildren {
-        EntityStore::fetch(pack!(cx)).entities[self.0]
-            .children
-            .clone()
+    pub fn children<'a>(self) -> EntityChildren {
+        EntityStore::fetch().entities[self.0].children.clone()
     }
 
     pub fn set_parent(self, parent: Option<Entity>) {
@@ -176,14 +226,14 @@ impl Entity {
         // Remove from old parent
         let me = &mut store.entities[self.0];
         let old_parent = me.parent.take();
-        let old_index = me.index_in_parent;
+        let old_index = me.index_in_parent();
 
         if let Some(parent) = old_parent {
             let parent = &mut store.entities[parent.0];
 
             parent.children.mutate().swap_remove(old_index as usize);
             if let Some(&moved) = parent.children.vec.get(old_index as usize) {
-                store.entities[moved.0].index_in_parent = old_index;
+                store.entities[moved.0].set_index_in_parent_unchecked(old_index);
             }
         }
 
@@ -194,12 +244,7 @@ impl Entity {
             let parent_val = parent_val.unwrap();
 
             me.parent = Some(parent);
-            me.index_in_parent = u32::try_from(parent_val.children.len()).unwrap_or_else(|_| {
-                panic!(
-                    "{parent:?} has too many children (more than {}??)",
-                    u32::MAX
-                )
-            });
+            me.set_index_in_parent(parent_val.children.len());
 
             parent_val.children.mutate().push(self);
         }
@@ -215,19 +260,17 @@ impl Entity {
             .or_insert(entity_info.archetype);
     }
 
-    pub fn add<T: Component>(
-        self,
-        value: T,
-        cx: Bundle<(&WORLD, &mut AccessRes<EntityStore>, &mut AccessComp<T>)>,
-    ) -> Obj<T> {
-        let store = EntityStore::fetch_mut(pack!(cx));
-        let storage = &mut **<T::Arena>::fetch_mut(pack!(cx));
+    pub fn add<T: Component>(self, value: T, cx: Bundle<&mut AccessComp<T>>) -> Obj<T> {
+        let store = EntityStore::fetch_mut();
+        let storage = &mut **<T::Arena>::fetch_mut(pack!(@env, cx));
 
         // Ensure that the entity is alive
         let entity = &mut store
             .entities
             .get_mut(self.0)
             .unwrap_or_else(|| panic!("{self:?} is not alive"));
+
+        assert!(!entity.condemned(), "{self:?} is condemned");
 
         // See if we can update the existing component in-place.
         let entry = match storage.entity_map.entry(self) {
@@ -253,24 +296,29 @@ impl Entity {
         Obj::from_raw(handle)
     }
 
-    pub fn with<T: Component>(
-        self,
-        value: T,
-        cx: Bundle<(&WORLD, &mut AccessRes<EntityStore>, &mut AccessComp<T>)>,
-    ) -> Self {
+    pub fn with<T: Component>(self, value: T, cx: Bundle<&mut AccessComp<T>>) -> Self {
         self.add(value, pack!(cx));
         self
     }
 
-    pub fn try_get<T: Component>(self, cx: Bundle<AccessCompRef<'_, T>>) -> Option<Obj<T>> {
-        <T::Arena>::fetch(pack!(cx))
+    pub fn with_many<T: BundleItemSet>(
+        self,
+        gen: impl FnOnce(Entity, Bundle<T>),
+        cx: Bundle<T>,
+    ) -> Self {
+        gen(self, cx);
+        self
+    }
+
+    pub fn try_get<T: Component>(self, cx: Bundle<&AccessComp<T>>) -> Option<Obj<T>> {
+        <T::Arena>::fetch(pack!(@env, cx))
             .entity_map
             .get(&self)
             .copied()
             .map(Obj::from_raw)
     }
 
-    pub fn get<T: Component>(self, cx: Bundle<AccessCompRef<'_, T>>) -> Obj<T> {
+    pub fn get<T: Component>(self, cx: Bundle<&AccessComp<T>>) -> Obj<T> {
         self.try_get(pack!(cx)).unwrap_or_else(|| {
             panic!(
                 "{self:?} does not have component of type `{}`",
@@ -279,10 +327,7 @@ impl Entity {
         })
     }
 
-    pub fn try_deep_get<T: Component>(
-        self,
-        cx: Bundle<(&WORLD, &AccessRes<EntityStore>, &AccessComp<T>)>,
-    ) -> Option<Obj<T>> {
+    pub fn try_deep_get<T: Component>(self, cx: Bundle<&AccessComp<T>>) -> Option<Obj<T>> {
         let mut iter = Some(self);
 
         while let Some(curr) = iter {
@@ -290,16 +335,13 @@ impl Entity {
                 return Some(obj);
             }
 
-            iter = curr.parent(pack!(cx));
+            iter = curr.parent();
         }
 
         None
     }
 
-    pub fn deep_get<T: Component>(
-        self,
-        cx: Bundle<(&WORLD, &AccessRes<EntityStore>, &AccessComp<T>)>,
-    ) -> Obj<T> {
+    pub fn deep_get<T: Component>(self, cx: Bundle<&AccessComp<T>>) -> Obj<T> {
         self.try_deep_get(pack!(cx)).unwrap_or_else(|| {
             panic!(
                 "{self:?} and its ancestry do not have component of type `{}`",
@@ -308,11 +350,18 @@ impl Entity {
         })
     }
 
-    pub fn remove_now<T: Component>(
-        self,
-        cx: Bundle<(&WORLD, &mut AccessRes<EntityStore>, &mut AccessComp<T>)>,
-    ) -> Option<T> {
-        let store = EntityStore::fetch_mut(pack!(cx));
+    pub fn remove<T: Component>(self) {
+        EntityStore::fetch_mut()
+            .target_queue_state
+            .to_remove
+            .entry(ComponentId::of::<T>())
+            .or_default()
+            .0
+            .insert(self);
+    }
+
+    pub fn remove_now<T: Component>(self, cx: Bundle<&mut AccessComp<T>>) -> Option<T> {
+        let store = EntityStore::fetch_mut();
 
         let Some(entity) = store.entities.get_mut(self.0) else {
             return None;
@@ -329,9 +378,9 @@ impl Entity {
 
     pub(crate) fn remove_from_storage<T: Component>(
         self,
-        cx: Bundle<AccessCompMut<'_, T>>,
+        cx: Bundle<&mut AccessComp<T>>,
     ) -> Option<T> {
-        let storage = <T::Arena>::fetch_mut(pack!(cx));
+        let storage = <T::Arena>::fetch_mut(pack!(@env, cx));
 
         let Some(obj) = storage.entity_map.remove(&self) else {
             return None;
@@ -340,14 +389,37 @@ impl Entity {
         Some(storage.arena.remove(obj).unwrap().1)
     }
 
-    pub fn destroy_now(self, cx: Bundle<(&mut WORLD, &mut AccessRes<EntityStore>)>) {
-        let store = EntityStore::fetch_mut(pack!(cx));
+    pub fn destroy(self) {
+        let store = EntityStore::fetch_mut();
+        let entity = &mut store.entities[self.0];
+
+        if entity.condemned() {
+            return;
+        }
+
+        entity.mark_condemned();
+        store.target_queue_state.condemned.push(self);
+    }
+
+    pub fn destroy_now(self) {
+        let store = EntityStore::fetch_mut();
 
         // Destroy entity information before calling destructors to avoid reentrant operations on
         // dying entities.
         let Some(entity) = store.entities.remove(self.0) else {
             return;
         };
+
+        // Remove ourself from our parent
+        if let Some(parent) = entity.parent {
+            let children = store.entities[parent.0].children.mutate();
+            let index_in_parent = entity.index_in_parent();
+            children.swap_remove(index_in_parent as usize);
+
+            if let Some(&moved) = children.get(index_in_parent as usize) {
+                store.entities[moved.0].set_index_in_parent_unchecked(index_in_parent);
+            }
+        }
 
         // Remove from the reshaped map and into the dead map.
         let old_archetype = store
@@ -366,14 +438,14 @@ impl Entity {
         let arch_len = store.archetypes.components(arch).len();
 
         for i in 0..arch_len {
-            let comp = EntityStore::fetch(pack!(cx)).archetypes.components(arch)[i];
+            let comp = EntityStore::fetch().archetypes.components(arch)[i];
 
-            (comp.remove)(unpack!(cx => &mut WORLD), self);
+            (comp.remove_no_tracking)(&mut WORLD, self);
         }
 
         // Destroy all the children.
         for child in &entity.children {
-            child.destroy_now(pack!(cx));
+            child.destroy_now();
         }
     }
 
@@ -390,18 +462,57 @@ impl Entity {
     }
 
     pub fn query_state<'a>(cx: Bundle<AccessResRef<'a, EntityStore>>) -> &'a Rc<EntityQueryState> {
-        &EntityStore::fetch(pack!(cx)).query_state
+        &EntityStore::fetch(cx).query_state
     }
 
-    pub fn flush(cx: Bundle<&mut WORLD>) {
-        let world: &mut World = cx.unwrap();
+    pub fn queue_state<'a>(cx: Bundle<AccessResRef<'a, EntityStore>>) -> &'a Rc<EntityQueueState> {
+        &EntityStore::fetch(cx).view_queue_state
+    }
 
+    pub fn flush(mut f: impl FnMut(&mut World)) {
         // Process queued operations
-        // TODO: define queued operations
+        loop {
+            // See if there are any operations remaining.
+            let store = EntityStore::fetch_mut();
+            let mut queue = mem::take(&mut store.target_queue_state);
+            if queue.is_empty() {
+                break;
+            }
+
+            // Normalize queue
+            for &condemned in &queue.condemned {
+                let Some(info) = store.entities.get(condemned.0) else {
+                    continue;
+                };
+
+                for &comp in store.archetypes.components(info.archetype) {
+                    queue.to_remove.entry(comp).or_default().0.insert(condemned);
+                }
+            }
+
+            for (comp_id, (entities, list)) in queue.to_remove.iter_mut() {
+                (comp_id.populate_indices)(&mut WORLD, entities, list);
+            }
+
+            // Freeze queue
+            let queue = Rc::new(queue);
+            EntityStore::fetch_mut().view_queue_state = queue.clone();
+
+            // Run handler
+            f(&mut WORLD);
+
+            // Kill condemned entities
+            for &condemned in &queue.condemned {
+                condemned.destroy_now();
+            }
+
+            // Remove components
+            for (comp, (deleted, _indices)) in &queue.to_remove {
+                (comp.remove_for_deferred)(&mut WORLD, deleted);
+            }
+        }
 
         // Process reshape requests.
-        bind!(world);
-
         let store = EntityStore::fetch_mut();
         let archetype_members = Rc::get_mut(&mut store.query_state)
             .expect("cannot `flush` the world while it is still being iterated over");
@@ -669,8 +780,12 @@ impl<T: Component> Obj<T> {
         me.index
     }
 
-    pub fn entity(self, cx: Bundle<AccessCompRef<'_, T>>) -> Entity {
-        <T::Arena>::fetch(pack!(cx)).arena[self.index].0
+    pub fn is_alive(me: Self, cx: Bundle<&AccessComp<T>>) -> bool {
+        <T::Arena>::fetch(pack!(@env, cx)).arena.contains(me.index)
+    }
+
+    pub fn entity(self, cx: Bundle<&AccessComp<T>>) -> Entity {
+        <T::Arena>::fetch(pack!(@env, cx)).arena[self.index].0
     }
 
     pub fn debug<'a>(self, cx: Bundle<&'a mut WORLD>) -> WorldFmt<'a, Self> {

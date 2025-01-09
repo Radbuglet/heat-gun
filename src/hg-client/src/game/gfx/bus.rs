@@ -1,5 +1,5 @@
 use std::{
-    context::{infer_bundle, pack, Bundle, DerefCxMut},
+    context::{infer_bundle, pack, Bundle},
     fmt, iter,
     rc::Rc,
 };
@@ -52,11 +52,12 @@ fn find_gfx_inner<'a>(
         &'a mut AccessRes<EntityStore>,
     )>,
 ) -> &'a mut GfxNodeCollection {
-    let mut node = match ancestor.try_get::<GraphicsNode>(pack!(cx)) {
+    let static ..cx;
+
+    let mut node = match ancestor.try_get::<GraphicsNode>() {
         Some(parent) => parent,
-        None => ancestor.add(GraphicsNode::default(), pack!(cx)),
+        None => ancestor.add(GraphicsNode::default()),
     };
-    let node = node.deref_cx_mut(pack!(cx));
 
     let entry = match node.descendants.entry(id) {
         Entry::Occupied(entry) => {
@@ -70,13 +71,11 @@ fn find_gfx_inner<'a>(
     let mut visit_stack = vec![ancestor];
 
     while let Some(target) = visit_stack.pop() {
-        visit_stack.extend(&target.children(pack!(cx)));
+        visit_stack.extend(&target.children());
 
-        let comps = Entity::archetypes(pack!(cx)).components_set(target.archetype());
+        let comps = Entity::archetypes().components_set(target.archetype());
 
-        if comps.contains(&id)
-            && comps.contains(&ComponentId::of::<GfxParticipant>())
-        {
+        if comps.contains(&id) && comps.contains(&ComponentId::of::<GfxParticipant>()) {
             descendants.insert(target);
         }
     }

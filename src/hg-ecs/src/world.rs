@@ -280,6 +280,14 @@ macro_rules! bind {
         let mut cx = $world.reborrow();
         let static ..cx.bundle::<$crate::world::bind_internals::infer_bundle!('_)>();
     };
+    ($world:expr, let $name:ident: $ty:ty) => {
+        let mut cx = $world.reborrow();
+        let (bundle, $name) = cx.bundle::<(
+            $crate::world::bind_internals::infer_bundle!('_),
+            $ty,
+        )>().split();
+        let static ..bundle;
+    };
 }
 
 pub use bind;

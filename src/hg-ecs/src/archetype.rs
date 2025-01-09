@@ -1,6 +1,7 @@
 use std::{
     any::type_name,
     cmp::Ordering,
+    context::pack,
     fmt,
     hash::Hash,
     ops::{Deref, Range},
@@ -14,7 +15,7 @@ use index_vec::{define_index_type, IndexVec};
 use rustc_hash::FxBuildHasher;
 use thunderdome::Index;
 
-use crate::{entity::Component, world::ImmutableWorld, Entity, World};
+use crate::{bind, entity::Component, world::ImmutableWorld, AccessComp, Entity, Obj, World};
 
 // === ComponentId === //
 
@@ -47,10 +48,26 @@ impl ComponentId {
                 fetch_idx: |world, entity| {
                     unsafe { &*world.single::<T::Arena>() }.entity_map[&entity]
                 },
-                remove: |world, entity| {
-                    let mut world = world.reborrow();
+                remove_no_tracking: |world, entity| {
+                    bind!(world, let cx: &mut AccessComp<T>);
 
-                    entity.remove_from_storage::<T>(world.bundle());
+                    entity.remove_from_storage::<T>(pack!(cx));
+                },
+                remove_for_deferred: |world, queue| {
+                    bind!(world, let cx: &mut AccessComp<T>);
+
+                    for &entity in queue {
+                        entity.remove_from_storage::<T>(pack!(cx));
+                    }
+                },
+                populate_indices: |world, set, list| {
+                    bind!(world, let cx: &AccessComp<T>);
+
+                    for entity in set {
+                        if let Some(comp) = entity.try_get::<T>(pack!(cx)) {
+                            list.push(Obj::raw(comp));
+                        }
+                    }
                 },
             };
         }
@@ -96,9 +113,11 @@ impl PartialOrd for ComponentId {
 #[derive(Debug)]
 pub struct ComponentInfo {
     pub type_name: fn() -> &'static str,
-    pub debug_fmt: fn(ImmutableWorld, Entity, &mut fmt::DebugStruct<'_, '_>),
-    pub fetch_idx: unsafe fn(&World, Entity) -> Index,
-    pub remove: fn(&mut World, Entity),
+    pub(crate) debug_fmt: fn(ImmutableWorld, Entity, &mut fmt::DebugStruct<'_, '_>),
+    pub(crate) fetch_idx: unsafe fn(&World, Entity) -> Index,
+    pub(crate) remove_for_deferred: fn(&mut World, &FxHashSet<Entity>),
+    pub(crate) remove_no_tracking: fn(&mut World, Entity),
+    pub(crate) populate_indices: fn(&mut World, &FxHashSet<Entity>, &mut Vec<Index>),
 }
 
 // === ArchetypeId === //
