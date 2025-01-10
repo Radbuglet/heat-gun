@@ -8,6 +8,7 @@ use macroquad::{input::is_quit_requested, window::next_frame};
 use driver::{world_init, world_tick};
 
 pub mod driver;
+pub mod base;
 pub mod game;
 pub mod utils;
 

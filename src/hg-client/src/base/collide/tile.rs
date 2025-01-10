@@ -1,6 +1,6 @@
 use hg_ecs::{bind, component, Obj};
 
-use crate::game::tile::{DensePaletteCache, PaletteCache, TileLayer};
+use crate::base::tile::{DensePaletteCache, PaletteCache, TileLayerSet};
 
 use super::bus::{ColliderMat, CustomColliderMat};
 
@@ -8,7 +8,7 @@ use super::bus::{ColliderMat, CustomColliderMat};
 
 #[derive(Debug)]
 pub struct TileCollider {
-    layers: Vec<Obj<TileLayer>>,
+    map: Obj<TileLayerSet>,
     cache: DensePaletteCache<PaletteCollider>,
 }
 
@@ -20,7 +20,7 @@ impl TileCollider {
 
             let collider = &mut *entity.get::<TileCollider>();
 
-            for layer in &mut collider.layers {
+            for &(mut layer) in collider.map.layers() {
                 for pos in layer.config.actor_aabb_to_tile(aabb).inclusive().iter() {
                     let tile = layer.map.get(pos);
 
@@ -41,12 +41,10 @@ impl TileCollider {
         },
     });
 
-    pub fn new(layers: Vec<Obj<TileLayer>>) -> Self {
-        let palette = layers[0].palette;
-
+    pub fn new(layers: Obj<TileLayerSet>) -> Self {
         Self {
-            layers,
-            cache: DensePaletteCache::new(palette),
+            map: layers,
+            cache: DensePaletteCache::new(layers.palette()),
         }
     }
 }

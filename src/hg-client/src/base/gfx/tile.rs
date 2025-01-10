@@ -2,7 +2,7 @@ use hg_ecs::{component, Obj};
 use macroquad::color::Color;
 
 use crate::{
-    game::tile::{DensePaletteCache, PaletteCache as _, TileLayer},
+    base::tile::{DensePaletteCache, PaletteCache as _, TileLayerSet},
     utils::math::{Aabb, MqAabbExt},
 };
 
@@ -31,25 +31,22 @@ impl PaletteVisuals {
 
 #[derive(Debug)]
 pub struct TileRenderer {
-    layers: Vec<Obj<TileLayer>>,
+    layers: Obj<TileLayerSet>,
     cache: DensePaletteCache<PaletteVisuals>,
 }
 
 component!(TileRenderer);
 
 impl TileRenderer {
-    pub fn new(layers: Vec<Obj<TileLayer>>) -> Self {
-        assert!(!layers.is_empty());
-        let palette = layers[0].palette;
-
+    pub fn new(layers: Obj<TileLayerSet>) -> Self {
         Self {
             layers,
-            cache: DensePaletteCache::new(palette),
+            cache: DensePaletteCache::new(layers.palette()),
         }
     }
 
     pub fn render(&mut self, visible: Aabb) {
-        for &(mut layer) in &self.layers {
+        for &(mut layer) in self.layers.layers() {
             let visible = layer.config.actor_aabb_to_tile(visible);
 
             for pos in visible.inclusive().iter() {

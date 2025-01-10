@@ -6,7 +6,33 @@ use macroquad::{
     texture::RenderPass,
 };
 
-use crate::{game::kinematic::Pos, utils::math::Aabb};
+use crate::{base::kinematic::Pos, utils::math::Aabb};
+
+// === VirtualCameraSelector === //
+
+#[derive(Debug, Clone, Default)]
+pub struct VirtualCameraSelector {
+    current: Option<Obj<VirtualCamera>>,
+}
+
+component!(VirtualCameraSelector);
+
+impl VirtualCameraSelector {
+    pub fn current(&mut self) -> Option<Obj<VirtualCamera>> {
+        let current = self.current?;
+
+        if !Obj::is_alive(current) {
+            self.current = None;
+            return None;
+        }
+
+        Some(current)
+    }
+
+    pub fn set_current(&mut self, camera: Obj<VirtualCamera>) {
+        self.current = Some(camera);
+    }
+}
 
 // === VirtualCamera === //
 

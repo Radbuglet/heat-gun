@@ -1,6 +1,6 @@
 use hg_ecs::{component, Obj, Query};
 
-use crate::{game::kinematic::Pos, utils::math::Aabb};
+use crate::{base::kinematic::Pos, utils::math::Aabb};
 
 use super::bus::Collider;
 

@@ -7,7 +7,7 @@ use macroquad::{
 
 use crate::utils::math::Aabb;
 
-use super::{
+use crate::base::{
     collide::{
         bus::{register_collider, Collider, ColliderMask, ColliderMat},
         update::ColliderFollows,

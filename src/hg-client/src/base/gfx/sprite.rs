@@ -2,7 +2,7 @@ use hg_ecs::{component, Obj};
 use macroquad::{color::Color, math::Vec2};
 
 use crate::{
-    game::kinematic::Pos,
+    base::kinematic::Pos,
     utils::math::{Aabb, MqAabbExt},
 };
 

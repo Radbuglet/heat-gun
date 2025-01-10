@@ -345,7 +345,7 @@ impl Entity {
         self.try_deep_get(pack!(cx)).unwrap_or_else(|| {
             panic!(
                 "{self:?} and its ancestry do not have component of type `{}`",
-                type_name::<T>()
+                type_name::<T>(),
             )
         })
     }

@@ -1,70 +1,28 @@
 use hg_ecs::{bind, Entity, World};
-use macroquad::{
-    color::{GRAY, GREEN},
-    math::{IVec2, Vec2},
-};
+use macroquad::math::Vec2;
 
 use crate::{
-    game::{
-        collide::{
-            bus::{register_collider, sys_flush_colliders, Collider, ColliderBus, ColliderMask},
-            tile::TileCollider,
-            update::sys_update_colliders,
-        },
-        debug::sys_update_debug,
+    base::{
+        collide::{bus::sys_flush_colliders, update::sys_update_colliders},
         gfx::{
-            bus::{find_gfx, register_gfx},
-            camera::{sys_update_virtual_cameras, CameraKeepArea, VirtualCamera},
+            bus::find_gfx,
+            camera::{sys_update_virtual_cameras, VirtualCameraSelector},
             sprite::SolidRenderer,
-            tile::{PaletteVisuals, TileRenderer},
+            tile::TileRenderer,
         },
         kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame, Pos},
-        player::{spawn_player, sys_update_players},
-        tile::{TileConfig, TileLayer, TilePalette},
     },
-    utils::math::Aabb,
+    game::{
+        debug::sys_update_debug,
+        level::spawn_level,
+        player::{spawn_player, sys_update_players},
+    },
 };
 
 pub fn world_init(world: &mut World) {
     bind!(world);
 
-    // Create level
-    let level = Entity::new(Entity::root())
-        .with(VirtualCamera::default())
-        .with(Pos(Vec2::ZERO))
-        .with(CameraKeepArea::new(Vec2::new(1920., 1080.)))
-        .with(ColliderBus::default());
-
-    // Create palette
-    let mut palette = level.add(TilePalette::default());
-    let _air = palette.register("air", Entity::new(level).with(PaletteVisuals::Air));
-    let stone = palette.register(
-        "stone",
-        Entity::new(level).with(PaletteVisuals::Solid(GRAY)),
-    );
-    let grass = palette.register(
-        "grass",
-        Entity::new(level).with(PaletteVisuals::Solid(GREEN)),
-    );
-
-    // Create background layer
-    let mut background = level.add(TileLayer::new(TileConfig::from_size(50.), palette));
-
-    for x in 0..10 {
-        background.map.set(IVec2::splat(x) - IVec2::Y, grass);
-        background.map.set(IVec2::splat(x), stone);
-    }
-
-    // Create renderer
-    level.add(TileRenderer::new(vec![background]));
-    register_gfx(level);
-
-    // Create collider
-    let mut collider = level.add(Collider::new(ColliderMask::ALL, TileCollider::MATERIAL));
-    level.with(TileCollider::new(vec![background]));
-
-    collider.set_aabb(Aabb::EVERYWHERE);
-    register_collider(collider);
+    let level = spawn_level(Entity::root());
 
     // Spawn the player
     let player = spawn_player(level);
@@ -85,8 +43,10 @@ pub fn world_tick(world: &mut World) {
     sys_update_debug();
 
     // Render
-    for camera in &find_gfx::<VirtualCamera>(Entity::root()) {
-        let camera_obj = camera.get::<VirtualCamera>();
+    for camera in &find_gfx::<VirtualCameraSelector>(Entity::root()) {
+        let Some(camera_obj) = camera.get::<VirtualCameraSelector>().current() else {
+            continue;
+        };
         let _guard = camera_obj.bind();
 
         for layer in &find_gfx::<TileRenderer>(camera) {
