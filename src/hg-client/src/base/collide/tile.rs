@@ -1,6 +1,9 @@
 use hg_ecs::{bind, component, Obj};
 
-use crate::base::tile::{DensePaletteCache, PaletteCache, TileLayerSet};
+use crate::{
+    base::tile::{DensePaletteCache, PaletteCache, TileLayerSet},
+    utils::math::Segment,
+};
 
 use super::bus::{ColliderMat, CustomColliderMat};
 
@@ -38,6 +41,9 @@ impl TileCollider {
             }
 
             false
+        },
+        check_hull: |world, entity, aabb, translation| {
+            todo!();
         },
     });
 

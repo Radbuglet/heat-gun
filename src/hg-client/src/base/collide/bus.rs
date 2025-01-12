@@ -5,7 +5,7 @@ use std::{
 
 use hg_ecs::{component, query::query_removed, Entity, Obj, World, WORLD};
 
-use crate::utils::math::{Aabb, Bhv, BvhNodeIdx};
+use crate::utils::math::{Aabb, Bhv, BvhNodeIdx, Segment};
 
 // === ColliderBus === //
 
@@ -242,6 +242,7 @@ pub enum ColliderMat {
 pub struct CustomColliderMat {
     pub name: &'static str,
     pub check_aabb: fn(&mut World, Entity, Aabb) -> bool,
+    pub check_hull: fn(&mut World, Entity, Aabb, Segment) -> f32,
 }
 
 impl fmt::Debug for CustomColliderMat {

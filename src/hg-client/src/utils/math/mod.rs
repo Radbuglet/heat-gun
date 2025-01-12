@@ -7,6 +7,9 @@ pub use bvh::*;
 mod glam;
 pub use glam::*;
 
+mod line;
+pub use line::*;
+
 mod macroquad_ext;
 pub use macroquad_ext::*;
 

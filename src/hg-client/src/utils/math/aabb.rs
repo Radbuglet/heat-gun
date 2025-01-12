@@ -2,7 +2,10 @@ use std::iter;
 
 use macroquad::math::{IVec2, Vec2};
 
-use super::glam::{AaLine, AaLineI, Axis2, TileFace};
+use super::{
+    glam::{AaLine, AaLineI, Axis2, TileFace},
+    Segment,
+};
 
 #[derive(Debug, Copy, Clone)]
 pub struct Aabb {
@@ -146,12 +149,15 @@ impl Aabb {
         self.min.is_nan() || self.max.is_nan()
     }
 
-    pub fn corners(&self) -> [Vec2; 4] {
+    pub fn corners(self) -> [Vec2; 4] {
+        let Vec2 { x: x_min, y: y_min } = self.min;
+        let Vec2 { x: x_max, y: y_max } = self.min;
+
         [
-            self.point_at(Vec2::new(0., 0.)),
-            self.point_at(Vec2::new(1., 0.)),
-            self.point_at(Vec2::new(1., 1.)),
-            self.point_at(Vec2::new(0., 1.)),
+            Vec2::new(x_min, y_min),
+            Vec2::new(x_max, y_min),
+            Vec2::new(x_max, y_max),
+            Vec2::new(x_min, y_max),
         ]
     }
 
@@ -183,6 +189,17 @@ impl Aabb {
             min: self.min.min(other.min),
             max: self.max.max(other.max),
         }
+    }
+
+    pub fn edges(self) -> [Segment; 4] {
+        let [a, b, c, d] = self.corners();
+
+        [
+            Segment::new_points(a, b),
+            Segment::new_points(b, c),
+            Segment::new_points(c, d),
+            Segment::new_points(d, a),
+        ]
     }
 }
 
