@@ -101,6 +101,22 @@ impl Segment {
     pub fn intersect(self, other: Segment) -> (Option<Vec2>, IntersectResult) {
         self.intersect_ext(other, SegmentCap, SegmentCap)
     }
+
+    pub fn x1(self) -> f32 {
+        self.start.x
+    }
+
+    pub fn y1(self) -> f32 {
+        self.start.y
+    }
+
+    pub fn x2(self) -> f32 {
+        self.end.x
+    }
+
+    pub fn y2(self) -> f32 {
+        self.end.y
+    }
 }
 
 #[derive(Debug, Copy, Clone)]

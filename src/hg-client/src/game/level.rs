@@ -3,20 +3,32 @@ use std::context::{infer_bundle, Bundle};
 use hg_ecs::Entity;
 use macroquad::{color::{GRAY, GREEN}, math::{IVec2, Vec2}};
 
-use crate::{base::{
-    collide::{bus::{register_collider, Collider, ColliderBus, ColliderMask}, tile::{PaletteCollider, TileCollider}},
-    gfx::{
-        bus::register_gfx, camera::{CameraKeepArea, VirtualCamera, VirtualCameraSelector}, tile::{PaletteVisuals, TileRenderer}
+use crate::{
+    base::{
+        collide::{
+            bus::{register_collider, Collider, ColliderBus, ColliderMask},
+            tile::{PaletteCollider, TileCollider}
+        },
+        debug::{set_debug_draw, DebugDraw},
+        gfx::{
+            bus::register_gfx,
+            camera::{CameraKeepArea, VirtualCamera, VirtualCameraSelector},
+            tile::{PaletteVisuals, TileRenderer},
+        },
+        kinematic::Pos,
+        tile::{TileConfig, TileLayer, TileLayerSet, TilePalette},
     },
-    kinematic::Pos,
-    tile::{TileConfig, TileLayer, TileLayerSet, TilePalette},
-}, utils::math::Aabb};
+    utils::math::Aabb,
+};
 
 // === Prefabs === //
 
 pub fn spawn_level(parent: Entity) -> Entity {
     let level = Entity::new(parent)
-        .with(ColliderBus::default());
+        .with(ColliderBus::default())
+        .with(DebugDraw::default());
+
+    set_debug_draw(level.get());
 
     // Setup camera
     let mut camera_selector = level.add(VirtualCameraSelector::default());

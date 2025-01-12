@@ -769,6 +769,11 @@ impl<T: Component> fmt::Debug for Obj<T> {
 }
 
 impl<T: Component> Obj<T> {
+    pub const DANGLING: Obj<T> = Obj {
+        _ty: PhantomData,
+        index: Index::DANGLING,
+    };
+
     pub fn from_raw(index: Index) -> Self {
         Self {
             _ty: PhantomData,

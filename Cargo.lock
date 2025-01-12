@@ -157,6 +157,7 @@ dependencies = [
  "hg-ecs",
  "hg-utils",
  "macroquad",
+ "scopeguard",
  "smallvec",
  "thunderdome",
 ]
