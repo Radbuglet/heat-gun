@@ -1,11 +1,13 @@
-use std::iter;
+use std::{iter, ops::Range};
 
 use macroquad::math::{IVec2, Vec2};
 
 use super::{
     glam::{AaLine, AaLineI, Axis2, TileFace},
-    Segment,
+    CopyRange, Segment, Sign, Vec2Ext,
 };
+
+// === AABB === //
 
 #[derive(Debug, Copy, Clone)]
 pub struct Aabb {
@@ -161,6 +163,14 @@ impl Aabb {
         ]
     }
 
+    pub fn corner(self, axis: Axis2, sign: Sign) -> f32 {
+        match sign {
+            Sign::Pos => self.max,
+            Sign::Neg => self.min,
+        }
+        .axis(axis)
+    }
+
     pub fn edge_line(self, face: TileFace) -> AaLine {
         use TileFace::*;
 
@@ -203,6 +213,8 @@ impl Aabb {
     }
 }
 
+// === AabbI === //
+
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 pub struct AabbI {
     pub min: IVec2,
@@ -239,7 +251,7 @@ impl AabbI {
         }
     }
 
-    pub fn iter(mut self) -> impl Iterator<Item = IVec2> {
+    pub fn iter_exclusive(mut self) -> impl Iterator<Item = IVec2> {
         self = self.normalized();
 
         let mut pos = self.min - IVec2::X;
@@ -253,6 +265,10 @@ impl AabbI {
 
             (pos.y < self.max.y).then_some(pos)
         })
+    }
+
+    pub fn iter_inclusive(self) -> impl Iterator<Item = IVec2> {
+        self.inclusive().iter_exclusive()
     }
 
     pub fn size(self) -> IVec2 {
@@ -287,5 +303,52 @@ impl AabbI {
                 norm: self.max.y,
             },
         }
+    }
+
+    pub fn x_range(self) -> Range<i32> {
+        self.min.x..self.max.x
+    }
+
+    pub fn y_range(self) -> Range<i32> {
+        self.min.y..self.max.y
+    }
+
+    pub fn diff_exclusive(self, without: AabbI) -> impl Iterator<Item = IVec2> {
+        let y_diff = RangeDiff::of(self.y_range(), without.y_range());
+
+        let full_rows = y_diff
+            .included()
+            .flat_map(move |y| self.x_range().into_iter().map(move |x| IVec2::new(x, y)));
+
+        let partial_x_diff = RangeDiff::of(self.x_range(), without.x_range());
+        let partial_rows = y_diff
+            .excluded
+            .into_range()
+            .flat_map(move |y| partial_x_diff.included().map(move |x| IVec2::new(x, y)));
+
+        full_rows.chain(partial_rows)
+    }
+
+    pub fn diff_inclusive(self, without: AabbI) -> impl Iterator<Item = IVec2> {
+        self.inclusive().diff_exclusive(without.inclusive())
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+struct RangeDiff {
+    excluded: CopyRange<i32>,
+    included: [CopyRange<i32>; 2],
+}
+
+impl RangeDiff {
+    fn of(with: Range<i32>, without: Range<i32>) -> Self {
+        let excluded = CopyRange::new(without.start.max(with.start)..without.end.min(with.end));
+        let included = [with.start..excluded.start, excluded.end..with.end].map(CopyRange::new);
+
+        Self { excluded, included }
+    }
+
+    fn included(self) -> impl Iterator<Item = i32> {
+        self.included.into_iter().flat_map(|v| v.into_range())
     }
 }

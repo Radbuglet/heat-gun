@@ -1,7 +1,10 @@
 use std::context::{infer_bundle, Bundle};
 
 use hg_ecs::Entity;
-use macroquad::{color::{GRAY, GREEN}, math::{IVec2, Vec2}};
+use macroquad::{
+    color::{GRAY, GREEN},
+    math::Vec2,
+};
 
 use crate::{
     base::{
@@ -18,7 +21,7 @@ use crate::{
         kinematic::Pos,
         tile::{TileConfig, TileLayer, TileLayerSet, TilePalette},
     },
-    utils::math::Aabb,
+    utils::math::{Aabb, AabbI},
 };
 
 // === Prefabs === //
@@ -97,13 +100,10 @@ fn spawn_tile_map(parent: Entity) -> Entity {
     // Initialize map
     {
         let mut background = background.get::<TileLayer>();
-
-        let grass = background.palette.lookup_by_name("grass");
         let stone = background.palette.lookup_by_name("stone");
 
-        for x in 0..10 {
-            background.map.set(IVec2::splat(x) - IVec2::Y, grass);
-            background.map.set(IVec2::splat(x), stone);
+        for pos in AabbI::new(0, 0, 100, 100).iter_inclusive() {
+            background.map.set(pos, stone);
         }
     }
 

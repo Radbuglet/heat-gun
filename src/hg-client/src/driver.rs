@@ -4,6 +4,7 @@ use macroquad::math::Vec2;
 use crate::{
     base::{
         collide::{bus::sys_flush_colliders, update::sys_update_colliders},
+        debug::DebugDraw,
         gfx::{
             bus::find_gfx,
             camera::{sys_update_virtual_cameras, VirtualCameraSelector},
@@ -25,8 +26,15 @@ pub fn world_init(world: &mut World) {
     let level = spawn_level(Entity::root());
 
     // Spawn the player
-    let player = spawn_player(level);
-    player.get::<Pos>().0 = Vec2::new(100., 200.);
+    let player = spawn_player(
+        level,
+        level
+            .get::<VirtualCameraSelector>()
+            .current()
+            .unwrap()
+            .entity(),
+    );
+    player.get::<Pos>().0 = Vec2::new(100., -200.);
 }
 
 pub fn world_tick(world: &mut World) {
@@ -55,6 +63,10 @@ pub fn world_tick(world: &mut World) {
 
         for solid in &find_gfx::<SolidRenderer>(camera) {
             solid.get::<SolidRenderer>().render();
+        }
+
+        for dbg in &find_gfx::<DebugDraw>(camera) {
+            dbg.get::<DebugDraw>().render();
         }
     }
 }

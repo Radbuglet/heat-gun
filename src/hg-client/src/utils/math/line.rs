@@ -31,6 +31,10 @@ impl Segment {
         self.end - self.start
     }
 
+    pub fn dir_or_zero(self) -> Vec2 {
+        self.delta().normalize_or_zero()
+    }
+
     pub fn len(self) -> f32 {
         (self.end - self.start).length()
     }
@@ -116,6 +120,13 @@ impl Segment {
 
     pub fn y2(self) -> f32 {
         self.end.y
+    }
+
+    pub fn translated(self, by: Vec2) -> Self {
+        Self {
+            start: self.start + by,
+            end: self.end + by,
+        }
     }
 }
 

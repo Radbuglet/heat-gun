@@ -1,4 +1,8 @@
+use std::ops;
+
 use macroquad::math::{BVec2, IVec2, Vec2};
+
+use crate::utils::lang::extension::Extends;
 
 // === Glam Extensions === //
 
@@ -6,7 +10,9 @@ pub trait Vec2Ext: Extends<Vec2> {
     fn mask(self, mask: BVec2) -> Self;
     fn mask_in_axis(self, axis: Axis2) -> Self;
     fn mask_out_axis(self, axis: Axis2) -> Self;
-    fn get_axis(self, axis: Axis2) -> f32;
+    fn axis(self, axis: Axis2) -> f32;
+    fn set_axis(&mut self, axis: Axis2, value: f32);
+    fn axis_mut(&mut self, axis: Axis2) -> &mut f32;
 }
 
 impl Vec2Ext for Vec2 {
@@ -22,8 +28,16 @@ impl Vec2Ext for Vec2 {
         self.mask(!axis.mask())
     }
 
-    fn get_axis(self, axis: Axis2) -> f32 {
+    fn axis(self, axis: Axis2) -> f32 {
         self[axis as usize]
+    }
+
+    fn set_axis(&mut self, axis: Axis2, value: f32) {
+        self[axis as usize] = value;
+    }
+
+    fn axis_mut(&mut self, axis: Axis2) -> &mut f32 {
+        &mut self[axis as usize]
     }
 }
 
@@ -35,8 +49,6 @@ pub enum Axis2 {
     Y,
 }
 
-use Axis2::*;
-
 impl Axis2 {
     pub const AXES: [Self; 2] = [Self::X, Self::Y];
 
@@ -46,15 +58,15 @@ impl Axis2 {
 
     pub fn mask(self) -> BVec2 {
         match self {
-            X => BVec2::new(true, false),
-            Y => BVec2::new(false, true),
+            Self::X => BVec2::new(true, false),
+            Self::Y => BVec2::new(false, true),
         }
     }
 
     pub fn unit_mag(self, comp: f32) -> Vec2 {
         match self {
-            X => Vec2::new(comp, 0.),
-            Y => Vec2::new(0., comp),
+            Self::X => Vec2::new(comp, 0.),
+            Self::Y => Vec2::new(0., comp),
         }
     }
 }
@@ -64,8 +76,6 @@ pub enum Sign {
     Pos,
     Neg,
 }
-
-use Sign::*;
 
 impl Sign {
     pub fn of_biased(v: f32) -> Self {
@@ -85,6 +95,17 @@ impl Sign {
     }
 }
 
+impl ops::Neg for Sign {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        match self {
+            Self::Pos => Self::Neg,
+            Self::Neg => Self::Pos,
+        }
+    }
+}
+
 pub fn add_magnitude(v: f32, by: f32) -> f32 {
     v + Sign::of_biased(v).unit_mag(by)
 }
@@ -97,58 +118,54 @@ pub enum TileFace {
     Bottom,
 }
 
-use TileFace::*;
-
-use crate::utils::lang::extension::Extends;
-
 impl TileFace {
     pub fn compose(axis: Axis2, sign: Sign) -> Self {
         match (axis, sign) {
-            (X, Neg) => Left,
-            (X, Pos) => Right,
-            (Y, Neg) => Top,
-            (Y, Pos) => Bottom,
+            (Axis2::X, Sign::Neg) => Self::Left,
+            (Axis2::X, Sign::Pos) => Self::Right,
+            (Axis2::Y, Sign::Neg) => Self::Top,
+            (Axis2::Y, Sign::Pos) => Self::Bottom,
         }
     }
 
     pub fn axis(self) -> Axis2 {
         match self {
-            Left | Right => X,
-            Top | Bottom => Y,
+            Self::Left | Self::Right => Axis2::X,
+            Self::Top | Self::Bottom => Axis2::Y,
         }
     }
 
     pub fn sign(self) -> Sign {
         match self {
-            Left | Top => Neg,
-            Right | Bottom => Pos,
+            Self::Left | Self::Top => Sign::Neg,
+            Self::Right | Self::Bottom => Sign::Pos,
         }
     }
 
     pub fn invert(self) -> Self {
         match self {
-            Left => Right,
-            Right => Left,
-            Top => Bottom,
-            Bottom => Top,
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+            Self::Top => Self::Bottom,
+            Self::Bottom => Self::Top,
         }
     }
 
     pub fn as_vec(self) -> Vec2 {
         match self {
-            Left => Vec2::NEG_X,
-            Right => Vec2::X,
-            Top => Vec2::NEG_Y,
-            Bottom => Vec2::Y,
+            Self::Left => Vec2::NEG_X,
+            Self::Right => Vec2::X,
+            Self::Top => Vec2::NEG_Y,
+            Self::Bottom => Vec2::Y,
         }
     }
 
     pub fn as_ivec(self) -> IVec2 {
         match self {
-            Left => IVec2::NEG_X,
-            Right => IVec2::X,
-            Top => IVec2::NEG_Y,
-            Bottom => IVec2::Y,
+            Self::Left => IVec2::NEG_X,
+            Self::Right => IVec2::X,
+            Self::Top => IVec2::NEG_Y,
+            Self::Bottom => IVec2::Y,
         }
     }
 }

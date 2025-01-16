@@ -1,6 +1,10 @@
 use hg_ecs::{component, Obj, Query};
 use macroquad::{math::Vec2, time::get_frame_time};
 
+use crate::utils::math::{Axis2, HullCastRequest, Vec2Ext};
+
+use super::collide::bus::{Collider, ColliderBus, ColliderMask};
+
 #[derive(Debug, Clone, Default)]
 pub struct Pos(pub Vec2);
 
@@ -33,8 +37,27 @@ pub fn sys_kinematic_start_of_frame() {
 pub fn sys_apply_kinematics() {
     let dt = get_frame_time();
 
-    for (mut pos, vel) in Query::<(Obj<Pos>, Obj<Vel>)>::new() {
-        pos.0 += vel.total() * dt;
+    for (mut pos, mut vel, collider) in Query::<(Obj<Pos>, Obj<Vel>, Obj<Collider>)>::new() {
+        let aabb = collider.aabb();
+        let bus = collider.entity().deep_get::<ColliderBus>();
+
+        for axis in Axis2::AXES {
+            let percent = bus.check_hull_percent(
+                HullCastRequest::new(
+                    aabb.grow(Vec2::splat(1.)),
+                    vel.physical.mask_in_axis(axis) * dt,
+                ),
+                ColliderMask::ALL,
+            );
+            *vel.physical.axis_mut(axis) *= percent;
+        }
+
+        let desired_delta = vel.total() * dt;
+
+        let percent_moved =
+            bus.check_hull_percent(HullCastRequest::new(aabb, desired_delta), ColliderMask::ALL);
+
+        pos.0 += desired_delta * percent_moved;
     }
 
     for (mut vel, kine) in Query::<(Obj<Vel>, Obj<KinematicProps>)>::new() {

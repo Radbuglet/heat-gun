@@ -34,10 +34,10 @@ impl TileCast {
         let dest = self.pos + self.dir;
 
         for axis in Axis2::iter() {
-            let origin_value = self.pos.get_axis(axis);
-            let delta_value = self.dir.get_axis(axis);
+            let origin_value = self.pos.axis(axis);
+            let delta_value = self.dir.axis(axis);
             let delta_sign = Sign::of_biased(delta_value);
-            let dest_value = dest.get_axis(axis);
+            let dest_value = dest.axis(axis);
 
             // Ensure that we crossed a block boundary
             if self.config.actor_to_tile_axis(axis, origin_value)

@@ -68,7 +68,7 @@ impl Camera for VirtualCamera {
     fn matrix(&self) -> Mat4 {
         let focus = self.focus();
         let center = focus.center();
-        let size = focus.size() * Vec2::new(1., -1.);
+        let size = focus.size() / 2. * Vec2::new(1., -1.);
 
         (Mat4::from_translation(center.extend(0.)) * Mat4::from_scale(size.extend(1.))).inverse()
     }

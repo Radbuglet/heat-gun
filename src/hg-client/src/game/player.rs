@@ -16,14 +16,15 @@ use crate::base::{
     kinematic::{KinematicProps, Pos, Vel},
 };
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PlayerController {
     last_heading: f32,
+    camera: Obj<Pos>,
 }
 
 component!(PlayerController);
 
-pub fn spawn_player(parent: Entity) -> Entity {
+pub fn spawn_player(parent: Entity, camera: Entity) -> Entity {
     let player = Entity::new(parent)
         .with(Pos::default())
         .with(Vel::default())
@@ -31,7 +32,10 @@ pub fn spawn_player(parent: Entity) -> Entity {
             gravity: Vec2::Y * 1000.,
             friction: 0.98,
         })
-        .with(PlayerController::default())
+        .with(PlayerController {
+            last_heading: 0.,
+            camera: camera.get(),
+        })
         .with(SolidRenderer::new_centered(RED, 50.))
         .with(Collider::new(ColliderMask::ALL, ColliderMat::Solid));
 
@@ -47,7 +51,7 @@ pub fn spawn_player(parent: Entity) -> Entity {
 }
 
 pub fn sys_update_players() {
-    for (mut vel, mut player) in Query::<(Obj<Vel>, Obj<PlayerController>)>::new() {
+    for (pos, mut vel, mut player) in Query::<(Obj<Pos>, Obj<Vel>, Obj<PlayerController>)>::new() {
         // Determine desired heading
         let mut heading = 0.;
 
@@ -66,5 +70,8 @@ pub fn sys_update_players() {
 
         // Apply heading
         vel.artificial += player.last_heading * Vec2::X;
+
+        // Update camera
+        player.camera.0 = pos.0;
     }
 }

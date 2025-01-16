@@ -5,7 +5,7 @@ use std::{
 
 use hg_ecs::{component, query::query_removed, Entity, Obj, World, WORLD};
 
-use crate::utils::math::{Aabb, Bhv, BvhNodeIdx, Segment};
+use crate::utils::math::{Aabb, Bhv, BvhNodeIdx, HullCastRequest};
 
 // === ColliderBus === //
 
@@ -63,6 +63,60 @@ impl ColliderBus {
         }
 
         filtered
+    }
+
+    pub fn check_aabb(self: Obj<Self>, aabb: Aabb, mask: ColliderMask) -> bool {
+        for candidate in self.lookup(aabb, mask) {
+            let collider = candidate.get::<Collider>();
+
+            match collider.material {
+                ColliderMat::Solid => return true,
+                ColliderMat::Disabled => {
+                    // (cannot collide)
+                }
+                ColliderMat::Custom(mat) => {
+                    if (mat.check_aabb)(&mut WORLD, candidate, aabb) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
+    pub fn check_hull_percent(
+        self: Obj<Self>,
+        request: HullCastRequest,
+        mask: ColliderMask,
+    ) -> f32 {
+        let mut max_trans = 1f32;
+
+        let candidate_aabb = request.candidate_aabb();
+
+        for candidate in self.lookup(candidate_aabb, mask) {
+            let collider = candidate.get::<Collider>();
+
+            match collider.material {
+                ColliderMat::Solid => {
+                    // TODO
+                }
+                ColliderMat::Disabled => {
+                    // ignore
+                }
+                ColliderMat::Custom(mat) => {
+                    let max_trans_local = (mat.check_hull_percent)(&mut WORLD, candidate, request);
+
+                    max_trans = max_trans.min(max_trans_local);
+                }
+            }
+        }
+
+        max_trans
+    }
+
+    pub fn check_hull(self: Obj<Self>, request: HullCastRequest, mask: ColliderMask) -> f32 {
+        self.check_hull_percent(request, mask) * request.delta_len()
     }
 }
 
@@ -242,7 +296,7 @@ pub enum ColliderMat {
 pub struct CustomColliderMat {
     pub name: &'static str,
     pub check_aabb: fn(&mut World, Entity, Aabb) -> bool,
-    pub check_hull: fn(&mut World, Entity, Aabb, Segment) -> f32,
+    pub check_hull_percent: fn(&mut World, Entity, HullCastRequest) -> f32,
 }
 
 impl fmt::Debug for CustomColliderMat {

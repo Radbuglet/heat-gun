@@ -49,16 +49,16 @@ impl DebugDraw {
         self.bind(DebugClearMode::Timed(Instant::now() + time))
     }
 
-    pub fn render(mut me: Obj<DebugDraw>) {
+    pub fn render(mut self: Obj<Self>) {
         let now = Instant::now();
 
         // Swap `me` with a dummy `DebugContext` so we can mutate ourself without needing to borrow
         // the `DebugContext` component. This is swapped back
-        let taken = mem::take(&mut *me);
+        let taken = mem::take(&mut *self);
         let cx = pack!(@env => Bundle<infer_bundle!('_)>);
         let mut guard = scopeguard::guard((cx, taken), |(cx, taken)| {
             let static ..cx;
-            *me = taken;
+            *self = taken;
         });
 
         let (cx, me) = &mut *guard;

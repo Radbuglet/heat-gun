@@ -49,7 +49,7 @@ impl TileRenderer {
         for &(mut layer) in self.layers.layers() {
             let visible = layer.config.actor_aabb_to_tile(visible);
 
-            for pos in visible.inclusive().iter() {
+            for pos in visible.iter_inclusive() {
                 let rect = layer.config.tile_to_actor_aabb(pos);
                 let tile = layer.map.get(pos);
                 let tile = self.cache.lookup(tile);
