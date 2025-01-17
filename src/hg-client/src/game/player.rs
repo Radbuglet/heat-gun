@@ -1,7 +1,7 @@
 use hg_ecs::{component, Entity, Obj, Query};
 use macroquad::{
     color::RED,
-    input::{is_key_down, KeyCode},
+    input::{is_key_down, is_key_pressed, KeyCode},
     math::{FloatExt, Vec2},
 };
 
@@ -63,7 +63,11 @@ pub fn sys_update_players() {
             heading += 1.;
         }
 
-        heading *= 250.;
+        if is_key_pressed(KeyCode::Space) {
+            vel.artificial.y = -2000.;
+        }
+
+        heading *= 500.;
 
         // Compute actual heading
         player.last_heading = player.last_heading.lerp(heading, 0.9);

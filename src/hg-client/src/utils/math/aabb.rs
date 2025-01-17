@@ -227,6 +227,11 @@ impl AabbI {
         max: IVec2::ZERO,
     };
 
+    pub const ONE: AabbI = AabbI {
+        min: IVec2::ZERO,
+        max: IVec2::ONE,
+    };
+
     pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
         Self::new_sized(IVec2::new(x, y), IVec2::new(w, h))
     }
@@ -251,19 +256,23 @@ impl AabbI {
         }
     }
 
+    pub fn contains_exclusive(self, pos: IVec2) -> bool {
+        self.x_range().contains(&pos.x) && self.y_range().contains(&pos.y)
+    }
+
     pub fn iter_exclusive(mut self) -> impl Iterator<Item = IVec2> {
         self = self.normalized();
 
         let mut pos = self.min - IVec2::X;
         iter::from_fn(move || {
-            if pos.x < self.max.x {
-                pos.x += 1;
-            } else {
+            pos.x += 1;
+
+            if pos.x >= self.max.x {
                 pos.x = self.min.x;
                 pos.y += 1;
             }
 
-            (pos.y < self.max.y).then_some(pos)
+            (pos.x < self.max.x && pos.y < self.max.y).then_some(pos)
         })
     }
 
@@ -314,17 +323,34 @@ impl AabbI {
     }
 
     pub fn diff_exclusive(self, without: AabbI) -> impl Iterator<Item = IVec2> {
+        let validate_pos = move |pos: IVec2| -> IVec2 {
+            debug_assert!(
+                self.contains_exclusive(pos) && !without.contains_exclusive(pos),
+                "{pos:?} not supposed to be contained in diff_exclusive({self:?}, {without:?}): {}",
+                if without.contains_exclusive(pos) {
+                    "contained in exclusion set"
+                } else {
+                    "not contained in parent set"
+                },
+            );
+
+            pos
+        };
+
         let y_diff = RangeDiff::of(self.y_range(), without.y_range());
 
-        let full_rows = y_diff
-            .included()
-            .flat_map(move |y| self.x_range().into_iter().map(move |x| IVec2::new(x, y)));
+        let full_rows = y_diff.included().flat_map(move |y| {
+            self.x_range()
+                .into_iter()
+                .map(move |x| validate_pos(IVec2::new(x, y)))
+        });
 
         let partial_x_diff = RangeDiff::of(self.x_range(), without.x_range());
-        let partial_rows = y_diff
-            .excluded
-            .into_range()
-            .flat_map(move |y| partial_x_diff.included().map(move |x| IVec2::new(x, y)));
+        let partial_rows = y_diff.excluded.into_range().flat_map(move |y| {
+            partial_x_diff
+                .included()
+                .map(move |x| validate_pos(IVec2::new(x, y)))
+        });
 
         full_rows.chain(partial_rows)
     }
@@ -342,7 +368,9 @@ struct RangeDiff {
 
 impl RangeDiff {
     fn of(with: Range<i32>, without: Range<i32>) -> Self {
-        let excluded = CopyRange::new(without.start.max(with.start)..without.end.min(with.end));
+        let excluded_lo = without.start.clamp(with.start, with.end);
+        let excluded_hi = without.end.clamp(with.start, with.end);
+        let excluded = CopyRange::new(excluded_lo..excluded_hi);
         let included = [with.start..excluded.start, excluded.end..with.end].map(CopyRange::new);
 
         Self { excluded, included }
@@ -350,5 +378,104 @@ impl RangeDiff {
 
     fn included(self) -> impl Iterator<Item = i32> {
         self.included.into_iter().flat_map(|v| v.into_range())
+    }
+}
+
+// === Tests === //
+
+#[cfg(test)]
+mod tests {
+    use std::{fmt, hash};
+
+    use hg_utils::hash::FxHashSet;
+
+    use super::*;
+
+    #[track_caller]
+    fn assert_set_equality<T: fmt::Debug + hash::Hash + Eq>(
+        expected: impl IntoIterator<Item = T>,
+        got: impl IntoIterator<Item = T>,
+    ) {
+        assert_eq!(FxHashSet::from_iter(expected), FxHashSet::from_iter(got));
+    }
+
+    #[track_caller]
+    fn test_1d_diff(with: Range<i32>, without: Range<i32>) {
+        let with = CopyRange::new(with);
+        let without = CopyRange::new(without);
+
+        assert_set_equality(
+            with.into_range()
+                .filter(|v| !without.into_range().contains(&v)),
+            RangeDiff::of(with.into_range(), without.into_range()).included(),
+        );
+    }
+
+    #[track_caller]
+    fn test_2d_diff(with: AabbI, without: AabbI) {
+        assert_set_equality(
+            with.iter_exclusive()
+                .filter(|&v| !without.contains_exclusive(v)),
+            with.diff_exclusive(without),
+        );
+    }
+
+    #[test]
+    fn iter_inclusive() {
+        assert_set_equality([], AabbI::ZERO.iter_exclusive());
+        assert_set_equality([], AabbI::new_sized(IVec2::ZERO, IVec2::X).iter_exclusive());
+        assert_set_equality([], AabbI::new_sized(IVec2::ZERO, IVec2::Y).iter_exclusive());
+        assert_set_equality([IVec2::ZERO], AabbI::ONE.iter_exclusive());
+        assert_set_equality(
+            [IVec2::ZERO, IVec2::X, IVec2::Y, IVec2::ONE],
+            AabbI::ONE.iter_inclusive(),
+        );
+    }
+
+    #[test]
+    fn diff_exclusive_1d() {
+        test_1d_diff(0..100, 10..110);
+        test_1d_diff(0..100, 10..90);
+        test_1d_diff(20..100, 10..110);
+    }
+
+    #[test]
+    fn diff_exclusive_2d() {
+        test_2d_diff(AabbI::ZERO, AabbI::ZERO);
+        test_2d_diff(AabbI::ZERO, AabbI::ONE);
+        test_2d_diff(AabbI::ONE, AabbI::ZERO);
+        test_2d_diff(AabbI::ONE, AabbI::ONE);
+    }
+
+    #[test]
+    fn diff_exclusive_1d_fuzz() {
+        let mut rng = fastrand::Rng::new();
+        rng.seed(4);
+
+        let mut rand_range = || {
+            let first = rng.i32(-100..100);
+            first..rng.i32(first..100)
+        };
+
+        for _ in 0..1000 {
+            test_1d_diff(rand_range(), rand_range());
+        }
+    }
+
+    #[test]
+    fn diff_exclusive_2d_fuzz() {
+        let mut rng = fastrand::Rng::new();
+        rng.seed(4);
+
+        let mut rand_aabb = || {
+            AabbI::new_sized(
+                IVec2::new(rng.i32(-100..100), rng.i32(-100..100)),
+                IVec2::new(rng.i32(0..100), rng.i32(0..100)),
+            )
+        };
+
+        for _ in 0..1000 {
+            test_2d_diff(rand_aabb(), rand_aabb());
+        }
     }
 }

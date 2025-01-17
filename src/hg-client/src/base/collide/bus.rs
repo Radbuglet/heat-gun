@@ -1,13 +1,20 @@
 use std::{
+    context::{pack, Bundle},
     fmt,
-    ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not},
+    ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, ControlFlow, Not},
 };
 
-use hg_ecs::{component, query::query_removed, Entity, Obj, World, WORLD};
+use hg_ecs::{component, query::query_removed, AccessComp, Entity, Obj, World, WORLD};
 
 use crate::utils::math::{Aabb, Bhv, BvhNodeIdx, HullCastRequest};
 
 // === ColliderBus === //
+
+pub type ColliderLookupCx<'a> = (
+    &'a mut WORLD,
+    &'a mut AccessComp<ColliderBus>,
+    &'a mut AccessComp<Collider>,
+);
 
 #[derive(Debug, Default)]
 pub struct ColliderBus {
@@ -25,9 +32,12 @@ impl ColliderBus {
         collider.bhv_idx = bhv_idx;
     }
 
-    pub fn lookup(self: Obj<Self>, lookup: Aabb, mask: ColliderMask) -> Vec<Entity> {
+    pub fn lookup<B>(
+        self: Obj<Self>,
+        lookup: Aabb,
+        mut predicate: impl FnMut((Obj<Collider>, Bundle<ColliderLookupCx<'_>>)) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
         let mut queue = self.tree.root_idx().into_iter().collect::<Vec<_>>();
-        let mut filtered = Vec::new();
 
         while let Some(curr) = queue.pop() {
             let curr = self.tree.node(curr);
@@ -41,33 +51,23 @@ impl ColliderBus {
                 continue;
             };
 
-            let candidate_ent = candidate.entity();
-
-            if !candidate.mask.intersects(mask) {
-                continue;
-            }
-
-            let did_pass = match candidate.material {
-                ColliderMat::Solid => true,
-                ColliderMat::Disabled => false,
-                ColliderMat::Custom(custom) => {
-                    (custom.check_aabb)(&mut WORLD, candidate_ent, lookup)
-                }
-            };
-
-            if !did_pass {
-                continue;
-            }
-
-            filtered.push(candidate_ent);
+            predicate((candidate, pack!(@env)))?;
         }
 
-        filtered
+        ControlFlow::Continue(())
     }
 
-    pub fn check_aabb(self: Obj<Self>, aabb: Aabb, mask: ColliderMask) -> bool {
-        for candidate in self.lookup(aabb, mask) {
-            let collider = candidate.get::<Collider>();
+    pub fn check_aabb(
+        self: Obj<Self>,
+        aabb: Aabb,
+        mut predicate: impl FnMut(Obj<Collider>, Bundle<ColliderLookupCx<'_>>) -> bool,
+    ) -> bool {
+        cbit::cbit!(for (collider, cx) in self.lookup(aabb) {
+            let static ..cx;
+
+            if !predicate(collider) {
+                continue;
+            }
 
             match collider.material {
                 ColliderMat::Solid => return true,
@@ -75,12 +75,13 @@ impl ColliderBus {
                     // (cannot collide)
                 }
                 ColliderMat::Custom(mat) => {
-                    if (mat.check_aabb)(&mut WORLD, candidate, aabb) {
+                    let entity = collider.entity();
+                    if (mat.check_aabb)(&mut WORLD, entity, aabb) {
                         return true;
                     }
                 }
             }
-        }
+        });
 
         false
     }
@@ -88,37 +89,46 @@ impl ColliderBus {
     pub fn check_hull_percent(
         self: Obj<Self>,
         request: HullCastRequest,
-        mask: ColliderMask,
+        mut predicate: impl FnMut(Obj<Collider>, Bundle<ColliderLookupCx<'_>>) -> bool,
     ) -> f32 {
         let mut max_trans = 1f32;
 
-        let candidate_aabb = request.candidate_aabb();
+        cbit::cbit!(for (collider, cx) in self.lookup(request.candidate_aabb()) {
+            let static ..cx;
 
-        for candidate in self.lookup(candidate_aabb, mask) {
-            let collider = candidate.get::<Collider>();
+            if !predicate(collider) {
+                continue;
+            }
 
             match collider.material {
                 ColliderMat::Solid => {
-                    // TODO
+                    max_trans = max_trans.min(request.hull_cast_percent(collider.aabb));
                 }
                 ColliderMat::Disabled => {
                     // ignore
                 }
                 ColliderMat::Custom(mat) => {
-                    let max_trans_local = (mat.check_hull_percent)(&mut WORLD, candidate, request);
+                    let entity = collider.entity();
+                    let max_trans_local = (mat.check_hull_percent)(&mut WORLD, entity, request);
 
                     max_trans = max_trans.min(max_trans_local);
                 }
             }
-        }
+        });
 
         max_trans
     }
 
-    pub fn check_hull(self: Obj<Self>, request: HullCastRequest, mask: ColliderMask) -> f32 {
-        self.check_hull_percent(request, mask) * request.delta_len()
+    pub fn check_hull(
+        self: Obj<Self>,
+        request: HullCastRequest,
+        predicate: impl FnMut(Obj<Collider>, Bundle<ColliderLookupCx<'_>>) -> bool,
+    ) -> f32 {
+        self.check_hull_percent(request, predicate) * request.delta_len()
     }
 }
+
+// === Collider === //
 
 #[derive(Debug)]
 pub struct Collider {
