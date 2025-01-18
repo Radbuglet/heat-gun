@@ -2,9 +2,11 @@ use std::{iter, ops::Range};
 
 use macroquad::math::{IVec2, Vec2};
 
+use crate::utils::lang::copy_range::CopyRange;
+
 use super::{
     glam::{AaLine, AaLineI, Axis2, TileFace},
-    CopyRange, Segment, Sign, Vec2Ext,
+    Segment, Sign, Vec2Ext,
 };
 
 // === AABB === //

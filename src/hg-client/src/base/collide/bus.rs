@@ -150,6 +150,10 @@ impl Collider {
         }
     }
 
+    pub fn expect_bus(&self) -> Obj<ColliderBus> {
+        self.bus.unwrap()
+    }
+
     pub fn unregister(&mut self) {
         if let Some(mut bus) = self.bus.take() {
             bus.tree.remove(self.bhv_idx);

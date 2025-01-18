@@ -128,6 +128,30 @@ impl Segment {
             end: self.end + by,
         }
     }
+
+    pub fn scaled(self, by: f32) -> Self {
+        Self::new_delta(self.start, self.delta() * by)
+    }
+
+    pub fn normalized_or_zero(self) -> Self {
+        Self::new_delta(self.start, self.dir_or_zero())
+    }
+
+    pub fn rotated_ccw_rad(self, rad: f32) -> Self {
+        Self::new_delta(self.start, self.delta().rotate(Vec2::from_angle(rad)))
+    }
+
+    pub fn rotated_cw_rad(self, rad: f32) -> Self {
+        self.rotated_ccw_rad(-rad)
+    }
+
+    pub fn rotated_ccw_deg(self, deg: f32) -> Self {
+        self.rotated_ccw_rad(deg.to_radians())
+    }
+
+    pub fn rotated_cw_deg(self, deg: f32) -> Self {
+        self.rotated_cw_rad(deg.to_radians())
+    }
 }
 
 #[derive(Debug, Copy, Clone)]

@@ -16,6 +16,8 @@ use crate::base::{
     kinematic::{KinematicProps, Pos, Vel},
 };
 
+// === Components === //
+
 #[derive(Debug, Clone)]
 pub struct PlayerController {
     last_heading: f32,
@@ -24,12 +26,14 @@ pub struct PlayerController {
 
 component!(PlayerController);
 
+// === Prefabs === //
+
 pub fn spawn_player(parent: Entity, camera: Entity) -> Entity {
     let player = Entity::new(parent)
         .with(Pos::default())
         .with(Vel::default())
         .with(KinematicProps {
-            gravity: Vec2::Y * 1000.,
+            gravity: Vec2::Y * 2000.,
             friction: 0.98,
         })
         .with(PlayerController {
@@ -50,8 +54,10 @@ pub fn spawn_player(parent: Entity, camera: Entity) -> Entity {
     player
 }
 
+// === Systems === //
+
 pub fn sys_update_players() {
-    for (pos, mut vel, mut player) in Query::<(Obj<Pos>, Obj<Vel>, Obj<PlayerController>)>::new() {
+    for (mut vel, mut player) in Query::<(Obj<Vel>, Obj<PlayerController>)>::new() {
         // Determine desired heading
         let mut heading = 0.;
 
@@ -64,17 +70,21 @@ pub fn sys_update_players() {
         }
 
         if is_key_pressed(KeyCode::Space) {
-            vel.artificial.y = -2000.;
+            vel.physical.y = -2000.;
         }
 
-        heading *= 500.;
+        heading *= 2000.;
 
         // Compute actual heading
         player.last_heading = player.last_heading.lerp(heading, 0.9);
 
         // Apply heading
         vel.artificial += player.last_heading * Vec2::X;
+    }
+}
 
+pub fn sys_update_player_camera() {
+    for (pos, mut player) in Query::<(Obj<Pos>, Obj<PlayerController>)>::new() {
         // Update camera
         player.camera.0 = pos.0;
     }

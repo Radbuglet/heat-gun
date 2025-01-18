@@ -16,7 +16,7 @@ use crate::{
     game::{
         debug::sys_update_debug,
         level::spawn_level,
-        player::{spawn_player, sys_update_players},
+        player::{spawn_player, sys_update_player_camera, sys_update_players},
     },
 };
 
@@ -42,15 +42,21 @@ pub fn world_tick(world: &mut World) {
 
     Entity::flush(world_flush);
 
-    // Update
-    sys_update_virtual_cameras();
+    world_update();
+    world_render();
+}
+
+pub fn world_update() {
     sys_kinematic_start_of_frame();
     sys_update_players();
     sys_apply_kinematics();
     sys_update_colliders();
+    sys_update_player_camera();
+    sys_update_virtual_cameras();
     sys_update_debug();
+}
 
-    // Render
+pub fn world_render() {
     for camera in &find_gfx::<VirtualCameraSelector>(Entity::root()) {
         let Some(camera_obj) = camera.get::<VirtualCameraSelector>().current() else {
             continue;

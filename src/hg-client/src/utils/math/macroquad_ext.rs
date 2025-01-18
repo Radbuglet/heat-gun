@@ -2,21 +2,21 @@ use macroquad::{
     color::Color,
     math::Rect,
     shapes::{
-        draw_line, draw_rectangle, draw_rectangle_ex, draw_rectangle_lines,
+        draw_circle, draw_line, draw_rectangle, draw_rectangle_ex, draw_rectangle_lines,
         draw_rectangle_lines_ex, DrawRectangleParams,
     },
 };
 
 use crate::utils::lang::extension::Extends;
 
-use super::{Aabb, Segment};
+use super::{Aabb, Circle, Segment};
 
 // === MqAabbExt === //
 
 pub trait MqAabbExt: Extends<Aabb> {
-    fn to_rect(self) -> Rect;
+    fn to_macroquad(self) -> Rect;
 
-    fn from_rect(rect: Rect) -> Self;
+    fn from_macroquad(rect: Rect) -> Self;
 
     fn draw_solid(self, color: Color);
 
@@ -28,11 +28,11 @@ pub trait MqAabbExt: Extends<Aabb> {
 }
 
 impl MqAabbExt for Aabb {
-    fn to_rect(self) -> Rect {
+    fn to_macroquad(self) -> Rect {
         Rect::new(self.x(), self.y(), self.w(), self.h())
     }
 
-    fn from_rect(rect: Rect) -> Self {
+    fn from_macroquad(rect: Rect) -> Self {
         Self::new(rect.x, rect.y, rect.w, rect.h)
     }
 
@@ -62,5 +62,17 @@ pub trait MqSegmentExt: Extends<Segment> {
 impl MqSegmentExt for Segment {
     fn draw(self, thickness: f32, color: Color) {
         draw_line(self.x1(), self.y1(), self.x2(), self.y2(), thickness, color);
+    }
+}
+
+// === MqCircleExt === //
+
+pub trait MqCircleExt: Extends<Circle> {
+    fn draw(self, color: Color);
+}
+
+impl MqCircleExt for Circle {
+    fn draw(self, color: Color) {
+        draw_circle(self.origin.x, self.origin.y, self.radius, color);
     }
 }

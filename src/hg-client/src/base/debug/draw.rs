@@ -9,9 +9,13 @@ use hg_ecs::{component, Obj, World, WORLD};
 use macroquad::{
     color::Color,
     input::{is_key_pressed, KeyCode},
+    math::Vec2,
+    shapes::draw_circle,
 };
 
-use crate::utils::math::{Aabb, MqAabbExt, MqSegmentExt, Segment};
+use crate::utils::math::{
+    Aabb, Circle, LogisticCurve, MqAabbExt as _, MqCircleExt as _, MqSegmentExt as _, Segment,
+};
 
 // === DebugDraw === //
 
@@ -123,9 +127,44 @@ impl DebugDrawBound {
         });
     }
 
+    pub fn vector(self, segment: Segment, thickness: f32, color: Color) {
+        self.push(move |_world| {
+            Circle::new(segment.start, thickness / 2.).draw(color);
+            Circle::new(segment.end, thickness / 2.).draw(color);
+            segment.draw(thickness, color);
+
+            let new_segment = segment
+                .translated(segment.delta())
+                .normalized_or_zero()
+                .scaled(50.);
+            new_segment
+                .rotated_ccw_deg(90. + 45.)
+                .draw(thickness, color);
+            new_segment.rotated_cw_deg(90. + 45.).draw(thickness, color);
+        });
+    }
+
+    pub fn vector_scaled(self, origin: Vec2, delta: Vec2, color: Color) {
+        let logistic = LogisticCurve {
+            max_value: 500.,
+            midpoint: 2000.,
+            steepness: 0.001,
+        };
+
+        let delta = delta.normalize_or_zero() * logistic.compute(delta.length());
+
+        self.vector(Segment::new_delta(origin, delta), 15., color);
+    }
+
     pub fn rect(self, aabb: Aabb, color: Color) {
         self.push(move |_world| {
             aabb.draw_solid(color);
+        });
+    }
+
+    pub fn circle(self, pos: Vec2, radius: f32, color: Color) {
+        self.push(move |_world| {
+            draw_circle(pos.x, pos.y, radius, color);
         });
     }
 
