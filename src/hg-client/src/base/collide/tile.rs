@@ -42,11 +42,11 @@ impl TileCollider {
 
             false
         },
-        check_hull_percent: |world, entity, request| {
+        cast_hull: |world, entity, request| {
             bind!(world);
 
             let collider = &mut *entity.get::<TileCollider>();
-            let mut max_trans = 1.;
+            let mut result = request.result_clear();
 
             for &(mut layer) in collider.map.layers() {
                 let step_size = layer.config.size;
@@ -54,8 +54,7 @@ impl TileCollider {
 
                 let mut prev_tiles_covered = AabbI::ZERO;
 
-                let steps_taken =
-                    (max_trans * request.delta_len() / layer.config.size).ceil() as u64;
+                let steps_taken = (result.dist / layer.config.size).ceil() as u64;
 
                 'scan: for _ in 0..=steps_taken {
                     let tiled_covered = layer.config.actor_aabb_to_tile(aabb).inclusive();
@@ -67,10 +66,10 @@ impl TileCollider {
                         match &*tile_mat {
                             PaletteCollider::Solid => {
                                 let tile_aabb = layer.config.tile_to_actor_aabb(tile);
-                                let candidate_max_trans = request.hull_cast_percent(tile_aabb);
+                                let candidate_result = request.hull_cast(tile_aabb);
 
-                                if candidate_max_trans < max_trans {
-                                    max_trans = candidate_max_trans;
+                                if candidate_result < result {
+                                    result = candidate_result;
                                     break 'scan;
                                 }
                             }
@@ -83,7 +82,7 @@ impl TileCollider {
                 }
             }
 
-            max_trans
+            result
         },
     });
 

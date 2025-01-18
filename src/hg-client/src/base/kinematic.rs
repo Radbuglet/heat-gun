@@ -69,9 +69,8 @@ pub fn sys_apply_kinematics() {
         dbg.vector_scaled(pos.0, vel.physical, GREEN);
         dbg.vector_scaled(pos.0, vel.total(), BLUE);
 
-        let percent_moved =
-            bus.check_hull_percent(HullCastRequest::new(aabb, desired_delta), &mut predicate);
+        let hull_result = bus.cast_hull(HullCastRequest::new(aabb, desired_delta), &mut predicate);
 
-        pos.0 += desired_delta * percent_moved;
+        pos.0 += desired_delta * hull_result.percent;
     }
 }

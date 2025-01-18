@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use macroquad::math::Vec2;
 
 use super::{ilerp_f32, Aabb, Axis2, Segment, Sign, Vec2Ext as _};
@@ -22,11 +24,11 @@ impl HullCastRequest {
         }
     }
 
-    pub fn hull_cast_percent(self, occluder: Aabb) -> f32 {
+    pub fn hull_cast(self, occluder: Aabb) -> HullCastResult {
         // We want to see the minimum distance along `translation`, if any, will cause `self` to
         // intersect with `occluder`.
 
-        let mut max_lerp = 1f32;
+        let mut result = self.result_clear();
 
         for axis in Axis2::AXES {
             let sign = Sign::of_biased(self.delta.axis(axis));
@@ -39,12 +41,11 @@ impl HullCastRequest {
                 closest_other,
             );
 
-            if achieve_lerp >= 0.0 && achieve_lerp < 1.0 {
-                max_lerp = max_lerp.min(achieve_lerp);
-            }
+            // `result_obstructed` clamps `achieve_lerp` for us.
+            result = result.min(self.result_obstructed(achieve_lerp, Vec2::ZERO));
         }
 
-        max_lerp
+        result
     }
 
     pub fn delta(self) -> Vec2 {
@@ -75,7 +76,52 @@ impl HullCastRequest {
         Segment::new_delta(self.start.center(), self.delta)
     }
 
-    pub fn hull_cast(self, occluder: Aabb) -> f32 {
-        self.hull_cast_percent(occluder) * self.delta.length()
+    pub fn result_clear(self) -> HullCastResult {
+        HullCastResult {
+            percent: 1.0,
+            dist: self.delta_len,
+            normal: None,
+        }
+    }
+
+    pub fn result_obstructed(self, percent: f32, normal: Vec2) -> HullCastResult {
+        if (0f32..=1f32).contains(&percent) {
+            HullCastResult {
+                percent,
+                dist: self.delta_len * percent,
+                normal: Some(normal),
+            }
+        } else {
+            self.result_clear()
+        }
+    }
+}
+
+// === HullCastResult === //
+
+#[derive(Debug, Copy, Clone)]
+pub struct HullCastResult {
+    pub percent: f32,
+    pub dist: f32,
+    pub normal: Option<Vec2>,
+}
+
+impl Eq for HullCastResult {}
+
+impl PartialEq for HullCastResult {
+    fn eq(&self, other: &Self) -> bool {
+        self.percent.total_cmp(&other.percent).is_eq()
+    }
+}
+
+impl Ord for HullCastResult {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.percent.total_cmp(&other.percent)
+    }
+}
+
+impl PartialOrd for HullCastResult {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
