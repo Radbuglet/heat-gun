@@ -1,5 +1,3 @@
-use std::ops;
-
 use macroquad::math::{BVec2, IVec2, Vec2};
 
 use crate::utils::lang::extension::Extends;
@@ -93,12 +91,8 @@ impl Sign {
             v
         }
     }
-}
 
-impl ops::Neg for Sign {
-    type Output = Self;
-
-    fn neg(self) -> Self::Output {
+    pub fn invert(self) -> Self {
         match self {
             Self::Pos => Self::Neg,
             Self::Neg => Self::Pos,

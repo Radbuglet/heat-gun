@@ -33,7 +33,7 @@ pub fn spawn_player(parent: Entity, camera: Entity) -> Entity {
         .with(Pos::default())
         .with(Vel::default())
         .with(KinematicProps {
-            gravity: Vec2::Y * 2000.,
+            gravity: Vec2::Y * 4000.,
             friction: 0.98,
         })
         .with(PlayerController {

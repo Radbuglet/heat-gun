@@ -2,20 +2,21 @@ use std::context::{infer_bundle, Bundle};
 
 use hg_ecs::Entity;
 use macroquad::{
-    color::{GRAY, GREEN},
+    color::{GRAY, GREEN, WHITE},
     math::Vec2,
 };
 
 use crate::{
     base::{
         collide::{
-            bus::{register_collider, Collider, ColliderBus, ColliderMask},
-            tile::{PaletteCollider, TileCollider}
+            bus::{register_collider, Collider, ColliderBus, ColliderMask, ColliderMat},
+            tile::{PaletteCollider, TileCollider},
         },
         debug::{set_debug_draw, DebugDraw},
         gfx::{
             bus::register_gfx,
             camera::{CameraKeepArea, VirtualCamera, VirtualCameraSelector},
+            sprite::SolidRenderer,
             tile::{PaletteVisuals, TileRenderer},
         },
         kinematic::Pos,
@@ -41,6 +42,10 @@ pub fn spawn_level(parent: Entity) -> Entity {
     // Setup tile map
     attach_palette(level);
     spawn_tile_map(level);
+
+    // Setup a demo collider
+    spawn_collie(level, Aabb::new(-5000., 0., 5000., 100.));
+    spawn_collie(level, Aabb::new(-1000., -1000., 500., 500.));
 
     // Register with services
     register_gfx(level);
@@ -100,10 +105,13 @@ fn spawn_tile_map(parent: Entity) -> Entity {
     // Initialize map
     {
         let mut background = background.get::<TileLayer>();
+        let grass = background.palette.lookup_by_name("grass");
         let stone = background.palette.lookup_by_name("stone");
 
         for pos in AabbI::new(0, 0, 100, 100).iter_inclusive() {
-            background.map.set(pos, stone);
+            background
+                .map
+                .set(pos, [stone, grass][(pos.x + pos.y) as usize % 2]);
         }
     }
 
@@ -116,7 +124,27 @@ fn spawn_tile_map(parent: Entity) -> Entity {
 
 fn spawn_layer(parent: Entity) -> Entity {
     Entity::new(parent).with(TileLayer::new(
-        TileConfig::from_size(100.),
+        TileConfig::from_size(10000.),
         parent.deep_get::<TilePalette>(),
     ))
+}
+
+fn spawn_collie(parent: Entity, aabb: Aabb) -> Entity {
+    let collie = Entity::new(parent);
+
+    collie.add(Pos(Vec2::ZERO));
+    collie.add(SolidRenderer {
+        color: WHITE,
+        aabb,
+    });
+
+    let mut collider =
+        collie.add(Collider::new(ColliderMask::ALL, ColliderMat::Solid));
+
+    collider.set_aabb(aabb);
+
+    register_collider(collider);
+    register_gfx(collie);
+
+    collie
 }

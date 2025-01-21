@@ -1,5 +1,5 @@
 use std::{
-    context::{pack, Bundle},
+    context::{infer_bundle, pack, Bundle},
     fmt,
     ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, ControlFlow, Not},
 };
@@ -91,9 +91,11 @@ impl ColliderBus {
         request: HullCastRequest,
         mut predicate: impl FnMut(Obj<Collider>, Bundle<ColliderLookupCx<'_>>) -> bool,
     ) -> HullCastResult {
+        let env = pack!(@env => Bundle<infer_bundle!('_)>);
         let mut result = request.result_clear();
 
         cbit::cbit!(for (collider, cx) in self.lookup(request.candidate_aabb()) {
+            let static ..env;
             let static ..cx;
 
             if !predicate(collider) {

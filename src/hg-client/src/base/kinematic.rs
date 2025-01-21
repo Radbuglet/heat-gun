@@ -2,12 +2,12 @@ use std::context::Bundle;
 
 use hg_ecs::{component, Obj, Query};
 use macroquad::{
-    color::{BLUE, GREEN, RED},
+    color::{BLUE, GREEN, RED, YELLOW},
     math::Vec2,
     time::get_frame_time,
 };
 
-use crate::utils::math::HullCastRequest;
+use crate::utils::math::{cancel_normal, HullCastRequest};
 
 use super::{
     collide::bus::{Collider, ColliderLookupCx},
@@ -56,21 +56,36 @@ pub fn sys_apply_kinematics() {
         vel.physical *= kine.friction;
     }
 
-    for (mut pos, vel, collider) in Query::<(Obj<Pos>, Obj<Vel>, Obj<Collider>)>::new() {
+    for (mut pos, mut vel, collider) in Query::<(Obj<Pos>, Obj<Vel>, Obj<Collider>)>::new() {
         let mut predicate =
             |candidate: Obj<Collider>, _cx: Bundle<ColliderLookupCx<'_>>| candidate != collider;
 
         let bus = collider.expect_bus();
         let aabb = collider.aabb();
 
-        let desired_delta = vel.total() * dt;
+        let mut desired_delta = vel.total() * dt;
+        let mut iter = 0;
 
-        dbg.vector_scaled(pos.0, vel.artificial, RED);
-        dbg.vector_scaled(pos.0, vel.physical, GREEN);
-        dbg.vector_scaled(pos.0, vel.total(), BLUE);
+        while desired_delta.length() > 0.001 && iter < 10 {
+            iter += 1;
 
-        let hull_result = bus.cast_hull(HullCastRequest::new(aabb, desired_delta), &mut predicate);
+            dbg.vector_scaled(pos.0, vel.artificial, RED);
+            dbg.vector_scaled(pos.0, vel.physical, GREEN);
+            dbg.vector_scaled(pos.0, vel.total(), BLUE);
 
-        pos.0 += desired_delta * hull_result.percent;
+            let hull_result =
+                bus.cast_hull(HullCastRequest::new(aabb, desired_delta), &mut predicate);
+
+            pos.0 += desired_delta * hull_result.percent;
+            desired_delta *= 1.0 - hull_result.percent;
+
+            if let Some(normal) = hull_result.normal {
+                dbg.vector_scaled(pos.0, normal, YELLOW);
+
+                vel.artificial = cancel_normal(vel.artificial, normal);
+                vel.physical = cancel_normal(vel.physical, normal);
+                desired_delta = cancel_normal(desired_delta, normal);
+            }
+        }
     }
 }
