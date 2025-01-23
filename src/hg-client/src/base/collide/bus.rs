@@ -94,7 +94,7 @@ impl ColliderBus {
         let env = pack!(@env => Bundle<infer_bundle!('_)>);
         let mut result = request.result_clear();
 
-        cbit::cbit!(for (collider, cx) in self.lookup(request.candidate_aabb()) {
+        cbit::cbit!(for (collider, cx) in self.lookup(/*request.candidate_aabb()*/ Aabb::EVERYWHERE) {
             let static ..env;
             let static ..cx;
 

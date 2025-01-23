@@ -67,6 +67,13 @@ impl Axis2 {
             Self::Y => Vec2::new(0., comp),
         }
     }
+
+    pub fn invert(self) -> Axis2 {
+        match self {
+            Self::X => Self::Y,
+            Self::Y => Self::X,
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]

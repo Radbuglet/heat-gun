@@ -58,7 +58,9 @@ impl TileCollider {
 
             for &(mut layer) in collider.map.layers() {
                 let step_size = layer.config.size;
-                let mut aabb = request.start_aabb().grow(Vec2::splat(SAFETY_THRESHOLD));
+                let mut aabb = request
+                    .start_aabb()
+                    .grow(Vec2::splat(SAFETY_THRESHOLD * 2.0));
 
                 let mut prev_tiles_covered = AabbI::ZERO;
 

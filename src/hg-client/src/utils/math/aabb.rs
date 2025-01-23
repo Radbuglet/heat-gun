@@ -155,7 +155,7 @@ impl Aabb {
 
     pub fn corners(self) -> [Vec2; 4] {
         let Vec2 { x: x_min, y: y_min } = self.min;
-        let Vec2 { x: x_max, y: y_max } = self.min;
+        let Vec2 { x: x_max, y: y_max } = self.max;
 
         [
             Vec2::new(x_min, y_min),
@@ -194,6 +194,20 @@ impl Aabb {
                 norm: self.max.y,
             },
         }
+    }
+
+    pub fn edge_segment(self, face: TileFace) -> Segment {
+        let Vec2 { x: x_min, y: y_min } = self.min;
+        let Vec2 { x: x_max, y: y_max } = self.max;
+
+        let [a, b, c, d] = match face {
+            TileFace::Left => [x_min, y_min, x_min, y_max],
+            TileFace::Right => [x_max, y_min, x_max, y_max],
+            TileFace::Top => [x_min, y_min, x_max, y_min],
+            TileFace::Bottom => [x_min, y_max, x_max, y_max],
+        };
+
+        Segment::new_points(Vec2::new(a, b), Vec2::new(c, d))
     }
 
     pub fn union(self, other: Self) -> Self {

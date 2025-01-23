@@ -44,7 +44,8 @@ pub fn spawn_level(parent: Entity) -> Entity {
     spawn_tile_map(level);
 
     // Setup a demo collider
-    spawn_collie(level, Aabb::new(-5000., 0., 5000., 100.));
+    spawn_collie(level, Aabb::new(-2000., 0., 2000., 100.));
+    spawn_collie(level, Aabb::new(-5000., 0., 3000., 200.));
     spawn_collie(level, Aabb::new(-1000., -1000., 500., 500.));
 
     // Register with services
