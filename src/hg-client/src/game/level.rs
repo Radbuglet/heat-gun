@@ -110,6 +110,9 @@ fn spawn_tile_map(parent: Entity) -> Entity {
         let stone = background.palette.lookup_by_name("stone");
 
         for pos in AabbI::new(0, 0, 100, 100).iter_inclusive() {
+            if fastrand::f32() > 0.4 {
+                continue;
+            }
             background
                 .map
                 .set(pos, [stone, grass][(pos.x + pos.y) as usize % 2]);
@@ -125,7 +128,7 @@ fn spawn_tile_map(parent: Entity) -> Entity {
 
 fn spawn_layer(parent: Entity) -> Entity {
     Entity::new(parent).with(TileLayer::new(
-        TileConfig::from_size(10000.),
+        TileConfig::from_size(100.),
         parent.deep_get::<TilePalette>(),
     ))
 }

@@ -10,6 +10,7 @@ use crate::{
 
 // === Query === //
 
+#[derive(Debug)]
 pub struct Query<R: QueryResult> {
     query_state: Rc<EntityQueryState>,
     archetypes: vec::IntoIter<ArchetypeId>,

@@ -1,5 +1,5 @@
 use std::{
-    any::type_name,
+    any::{type_name, TypeId},
     cmp::Ordering,
     context::pack,
     fmt,
@@ -36,6 +36,7 @@ impl ComponentId {
 
         impl<T: Component> Helper<T> {
             const INFO: &'static ComponentInfo = &ComponentInfo {
+                type_id: TypeId::of::<T>,
                 type_name: type_name::<T>,
                 debug_fmt: |world, entity, fmt| {
                     let storage = world.read::<T::Arena>();
@@ -86,7 +87,7 @@ impl Deref for ComponentId {
 
 impl Hash for ComponentId {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        (self.0 as *const ComponentInfo).hash(state);
+        (self.0.type_id)().hash(state);
     }
 }
 
@@ -94,13 +95,13 @@ impl Eq for ComponentId {}
 
 impl PartialEq for ComponentId {
     fn eq(&self, other: &Self) -> bool {
-        self.0 as *const ComponentInfo == other.0 as *const ComponentInfo
+        (self.0.type_id)() == (other.0.type_id)()
     }
 }
 
 impl Ord for ComponentId {
     fn cmp(&self, other: &Self) -> Ordering {
-        (self.0 as *const ComponentInfo).cmp(&(other.0 as *const ComponentInfo))
+        (self.0.type_id)().cmp(&(other.0.type_id)())
     }
 }
 
@@ -112,6 +113,7 @@ impl PartialOrd for ComponentId {
 
 #[derive(Debug)]
 pub struct ComponentInfo {
+    pub type_id: fn() -> TypeId,
     pub type_name: fn() -> &'static str,
     pub(crate) debug_fmt: fn(ImmutableWorld, Entity, &mut fmt::DebugStruct<'_, '_>),
     pub(crate) fetch_idx: unsafe fn(&World, Entity) -> Index,

@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 cbit = "0.1.0"
 derive-where = "1.2.7"
+fastrand = "2.3.0"
 hg-ecs = { version = "0.1.0", path = "../hg-ecs" }
 hg-utils = { version = "0.1.0", path = "../hg-utils" }
 macroquad = "0.4.13"
