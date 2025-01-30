@@ -1,8 +1,8 @@
 use std::{iter, ops::Range};
 
-use macroquad::math::{IVec2, Vec2};
+use glam::{IVec2, Vec2};
 
-use crate::utils::lang::copy_range::CopyRange;
+use crate::utils::lang::CopyRange;
 
 use super::{
     glam::{AaLine, AaLineI, Axis2, TileFace},

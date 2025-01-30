@@ -1,17 +1,17 @@
+use hg_common::base::{
+    collide::{bus::sys_flush_colliders, update::sys_update_colliders},
+    debug::DebugDraw,
+    kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame, Pos},
+};
 use hg_ecs::{bind, Entity, World};
-use macroquad::math::Vec2;
+use macroquad::{math::Vec2, time::get_frame_time};
 
 use crate::{
-    base::{
-        collide::{bus::sys_flush_colliders, update::sys_update_colliders},
-        debug::DebugDraw,
-        gfx::{
-            bus::find_gfx,
-            camera::{sys_update_virtual_cameras, VirtualCameraSelector},
-            sprite::SolidRenderer,
-            tile::TileRenderer,
-        },
-        kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame, Pos},
+    base::gfx::{
+        bus::find_gfx,
+        camera::{sys_update_virtual_cameras, VirtualCameraSelector},
+        sprite::SolidRenderer,
+        tile::TileRenderer,
     },
     game::{
         debug::sys_update_debug,
@@ -49,7 +49,7 @@ pub fn world_tick(world: &mut World) {
 pub fn world_update() {
     sys_kinematic_start_of_frame();
     sys_update_players();
-    sys_apply_kinematics();
+    sys_apply_kinematics(get_frame_time());
     sys_update_colliders();
     sys_update_player_camera();
     sys_update_virtual_cameras();

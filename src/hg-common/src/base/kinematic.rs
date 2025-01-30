@@ -1,18 +1,11 @@
 use std::context::Bundle;
 
-use hg_ecs::{component, Obj, Query};
-use macroquad::{
-    color::{BLUE, GREEN, RED, YELLOW},
-    math::Vec2,
-    time::get_frame_time,
-};
+use glam::Vec2;
+use hg_ecs::{component, entity::Component, Obj, Query, Resource};
 
 use crate::utils::math::{cancel_normal, HullCastRequest};
 
-use super::{
-    collide::bus::{Collider, ColliderLookupCx},
-    debug::debug_draw,
-};
+use super::collide::bus::{Collider, ColliderLookupCx};
 
 // === Components === //
 
@@ -42,15 +35,14 @@ pub struct KinematicProps {
 // === Systems === //
 
 pub fn sys_kinematic_start_of_frame() {
+    <<KinematicProps as Component>::Arena as Resource>::fetch();
+
     for mut vel in Query::<Obj<Vel>>::new() {
         vel.artificial = Vec2::ZERO;
     }
 }
 
-pub fn sys_apply_kinematics() {
-    let dt = get_frame_time();
-    let dbg = debug_draw().frame();
-
+pub fn sys_apply_kinematics(dt: f32) {
     for (mut vel, kine) in Query::<(Obj<Vel>, Obj<KinematicProps>)>::new() {
         vel.physical += kine.gravity * dt;
         vel.physical *= kine.friction;
@@ -69,10 +61,6 @@ pub fn sys_apply_kinematics() {
         while desired_delta.length() > 0.001 && iter < 10 {
             iter += 1;
 
-            dbg.vector_scaled(pos.0, vel.artificial, RED);
-            dbg.vector_scaled(pos.0, vel.physical, GREEN);
-            dbg.vector_scaled(pos.0, vel.total(), BLUE);
-
             let hull_result =
                 bus.cast_hull(HullCastRequest::new(aabb, desired_delta), &mut predicate);
 
@@ -80,8 +68,6 @@ pub fn sys_apply_kinematics() {
             desired_delta *= 1.0 - hull_result.percent;
 
             if let Some(normal) = hull_result.normal {
-                dbg.vector_scaled(pos.0, normal, YELLOW);
-
                 vel.artificial = cancel_normal(vel.artificial, normal);
                 vel.physical = cancel_normal(vel.physical, normal);
                 desired_delta = cancel_normal(desired_delta, normal);

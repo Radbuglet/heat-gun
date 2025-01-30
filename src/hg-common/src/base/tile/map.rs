@@ -1,7 +1,7 @@
 use std::{fmt, mem};
 
+use glam::{IVec2, Vec2};
 use hg_utils::hash::FxHashMap;
-use macroquad::math::{IVec2, Vec2};
 
 use crate::utils::math::{AaLine, Aabb, AabbI, Axis2, TileFace};
 

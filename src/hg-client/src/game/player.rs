@@ -1,20 +1,20 @@
+use hg_common::{
+    base::{
+        collide::{
+            bus::{register_collider, Collider, ColliderMask, ColliderMat},
+            update::ColliderFollows,
+        },
+        kinematic::{KinematicProps, Pos, Vel},
+    },
+    utils::math::{Aabb, RgbaColor},
+};
 use hg_ecs::{component, Entity, Obj, Query};
 use macroquad::{
-    color::RED,
     input::{is_key_down, is_key_pressed, KeyCode},
     math::{FloatExt, Vec2},
 };
 
-use crate::utils::math::Aabb;
-
-use crate::base::{
-    collide::{
-        bus::{register_collider, Collider, ColliderMask, ColliderMat},
-        update::ColliderFollows,
-    },
-    gfx::{bus::register_gfx, sprite::SolidRenderer},
-    kinematic::{KinematicProps, Pos, Vel},
-};
+use crate::base::gfx::{bus::register_gfx, sprite::SolidRenderer};
 
 // === Components === //
 
@@ -40,7 +40,7 @@ pub fn spawn_player(parent: Entity, camera: Entity) -> Entity {
             last_heading: 0.,
             camera: camera.get(),
         })
-        .with(SolidRenderer::new_centered(RED, 50.))
+        .with(SolidRenderer::new_centered(RgbaColor::RED, 50.))
         .with(Collider::new(ColliderMask::ALL, ColliderMat::Solid));
 
     player.with(ColliderFollows {

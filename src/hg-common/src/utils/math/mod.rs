@@ -7,6 +7,9 @@ pub use bvh::*;
 mod circle;
 pub use circle::*;
 
+mod color;
+pub use color::*;
+
 mod glam;
 pub use glam::*;
 
@@ -15,9 +18,6 @@ pub use hull::*;
 
 mod line;
 pub use line::*;
-
-mod macroquad_ext;
-pub use macroquad_ext::*;
 
 mod physics;
 pub use physics::*;

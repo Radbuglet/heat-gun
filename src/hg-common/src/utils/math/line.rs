@@ -1,4 +1,4 @@
-use macroquad::math::{Mat2, Vec2};
+use glam::{Mat2, Vec2};
 
 // === Segment === //
 

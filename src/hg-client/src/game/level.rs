@@ -1,28 +1,26 @@
-use std::context::{infer_bundle, Bundle};
-
-use hg_ecs::Entity;
-use macroquad::{
-    color::{GRAY, GREEN, WHITE},
-    math::Vec2,
-};
-
-use crate::{
+use hg_common::{
     base::{
         collide::{
             bus::{register_collider, Collider, ColliderBus, ColliderMask, ColliderMat},
             tile::{PaletteCollider, TileCollider},
         },
         debug::{set_debug_draw, DebugDraw},
-        gfx::{
-            bus::register_gfx,
-            camera::{CameraKeepArea, VirtualCamera, VirtualCameraSelector},
-            sprite::SolidRenderer,
-            tile::{PaletteVisuals, TileRenderer},
-        },
         kinematic::Pos,
         tile::{TileConfig, TileLayer, TileLayerSet, TilePalette},
     },
-    utils::math::{Aabb, AabbI},
+    utils::math::{Aabb, AabbI, RgbaColor},
+};
+use hg_ecs::Entity;
+use macroquad::math::Vec2;
+
+use crate::base::{
+    debug::debug_draw_macroquad,
+    gfx::{
+        bus::register_gfx,
+        camera::{CameraKeepArea, VirtualCamera, VirtualCameraSelector},
+        sprite::SolidRenderer,
+        tile::{PaletteVisuals, TileRenderer},
+    },
 };
 
 // === Prefabs === //
@@ -30,7 +28,7 @@ use crate::{
 pub fn spawn_level(parent: Entity) -> Entity {
     let level = Entity::new(parent)
         .with(ColliderBus::default())
-        .with(DebugDraw::default());
+        .with(DebugDraw::new(debug_draw_macroquad()));
 
     set_debug_draw(level.get());
 
@@ -54,9 +52,7 @@ pub fn spawn_level(parent: Entity) -> Entity {
     level
 }
 
-fn attach_palette(target: Entity, cx: Bundle<infer_bundle!('_)>) {
-    let static ..cx;
-
+fn attach_palette(target: Entity) {
     let mut palette = target.add(TilePalette::default());
     palette.register(
         "air",
@@ -68,13 +64,13 @@ fn attach_palette(target: Entity, cx: Bundle<infer_bundle!('_)>) {
         "grass",
         Entity::new(target)
             .with(PaletteCollider::Solid)
-            .with(PaletteVisuals::Solid(GREEN)),
+            .with(PaletteVisuals::Solid(RgbaColor::GREEN)),
     );
     palette.register(
         "stone",
         Entity::new(target)
             .with(PaletteCollider::Solid)
-            .with(PaletteVisuals::Solid(GRAY)),
+            .with(PaletteVisuals::Solid(RgbaColor::GRAY)),
     );
 }
 
@@ -138,12 +134,11 @@ fn spawn_collie(parent: Entity, aabb: Aabb) -> Entity {
 
     collie.add(Pos(Vec2::ZERO));
     collie.add(SolidRenderer {
-        color: WHITE,
+        color: RgbaColor::WHITE,
         aabb,
     });
 
-    let mut collider =
-        collie.add(Collider::new(ColliderMask::ALL, ColliderMat::Solid));
+    let mut collider = collie.add(Collider::new(ColliderMask::ALL, ColliderMat::Solid));
 
     collider.set_aabb(aabb);
 

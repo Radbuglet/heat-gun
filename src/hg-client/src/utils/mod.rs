@@ -1,2 +1,1 @@
-pub mod lang;
-pub mod math;
+pub mod macroquad_ext;

@@ -1,6 +1,6 @@
-use macroquad::math::{BVec2, IVec2, Vec2};
+use glam::{BVec2, IVec2, Vec2};
 
-use crate::utils::lang::extension::Extends;
+use crate::utils::lang::Extends;
 
 // === Glam Extensions === //
 

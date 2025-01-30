@@ -1,4 +1,4 @@
-use macroquad::math::{IVec2, Vec2};
+use glam::{IVec2, Vec2};
 use smallvec::SmallVec;
 
 use crate::utils::math::{ilerp_f32, Axis2, Sign, TileFace, Vec2Ext as _};

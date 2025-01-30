@@ -173,9 +173,25 @@ dependencies = [
  "cbit",
  "derive-where",
  "fastrand",
+ "hg-common",
  "hg-ecs",
  "hg-utils",
  "macroquad",
+ "scopeguard",
+ "smallvec",
+ "thunderdome",
+]
+
+[[package]]
+name = "hg-common"
+version = "0.1.0"
+dependencies = [
+ "cbit",
+ "derive-where",
+ "fastrand",
+ "glam",
+ "hg-ecs",
+ "hg-utils",
  "scopeguard",
  "smallvec",
  "thunderdome",

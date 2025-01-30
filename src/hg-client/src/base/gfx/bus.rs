@@ -7,8 +7,8 @@ use std::{
 use hg_ecs::{
     archetype::ComponentId,
     component,
-    entity::{Component, EntityStore},
-    AccessComp, AccessRes, Entity, WORLD,
+    entity::Component,
+    AccessComp, Entity, WORLD,
 };
 use hg_utils::hash::{hash_map::Entry, hash_set, FxHashMap, FxHashSet};
 
@@ -49,7 +49,6 @@ fn find_gfx_inner<'a>(
     cx: Bundle<(
         &'a WORLD,
         &'a mut AccessComp<GraphicsNode>,
-        &'a mut AccessRes<EntityStore>,
     )>,
 ) -> &'a mut GfxNodeCollection {
     let static ..cx;

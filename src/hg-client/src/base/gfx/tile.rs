@@ -1,17 +1,17 @@
-use hg_ecs::{component, Obj};
-use macroquad::color::Color;
-
-use crate::{
+use hg_common::{
     base::tile::{DensePaletteCache, PaletteCache as _, TileLayerSet},
-    utils::math::{Aabb, MqAabbExt},
+    utils::math::{Aabb, RgbaColor},
 };
+use hg_ecs::{component, Obj};
+
+use crate::utils::macroquad_ext::MqAabbExt as _;
 
 // === PaletteVisuals === //
 
 #[derive(Debug, Copy, Clone)]
 pub enum PaletteVisuals {
     Air,
-    Solid(Color),
+    Solid(RgbaColor),
 }
 
 component!(PaletteVisuals);

@@ -1,4 +1,4 @@
-use macroquad::math::Vec2;
+use glam::Vec2;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Circle {

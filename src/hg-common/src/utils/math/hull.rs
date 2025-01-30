@@ -1,11 +1,6 @@
 use std::cmp::Ordering;
 
-use macroquad::{
-    color::{BLUE, RED},
-    math::Vec2,
-};
-
-use crate::base::debug::debug_draw;
+use glam::Vec2;
 
 use super::{ilerp_f32, Aabb, Axis2, Segment, Sign, TileFace, Vec2Ext as _, SAFETY_THRESHOLD};
 
@@ -35,8 +30,6 @@ impl HullCastRequest {
     /// motion is not traveling in the direction of the `face`. If has no safety threshold
     /// of its own.
     pub fn hull_cast_padding(self, aabb: Aabb, face: TileFace) -> HullCastResult {
-        debug_draw().frame().line_rect(aabb, 15., BLUE);
-
         // If the delta is not pointing in the same direction of the face, we can quickly tell that
         // the padding will have no effect in this hull-cast.
         if self.delta.dot(face.as_vec()) <= 0.0 {
@@ -112,11 +105,6 @@ impl HullCastRequest {
     }
 
     pub fn hull_cast(self, occluder: Aabb) -> HullCastResult {
-        let dbg = debug_draw().frame();
-
-        dbg.line_rect(occluder, 5., RED);
-        dbg.line_rect(occluder.grow(Vec2::splat(SAFETY_THRESHOLD * 2.)), 5., RED);
-
         let mut result = self.result_clear();
 
         for axis in Axis2::AXES {

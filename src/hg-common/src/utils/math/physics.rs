@@ -1,4 +1,4 @@
-use macroquad::math::Vec2;
+use glam::Vec2;
 
 pub const SAFETY_THRESHOLD: f32 = 0.001;
 

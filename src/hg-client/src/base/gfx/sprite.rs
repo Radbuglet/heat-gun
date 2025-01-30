@@ -1,19 +1,20 @@
-use hg_ecs::{component, Obj};
-use macroquad::{color::Color, math::Vec2};
-
-use crate::{
+use hg_common::{
     base::kinematic::Pos,
-    utils::math::{Aabb, MqAabbExt},
+    utils::math::{Aabb, RgbaColor},
 };
+use hg_ecs::{component, Obj};
+use macroquad::math::Vec2;
+
+use crate::utils::macroquad_ext::MqAabbExt as _;
 
 #[derive(Debug, Clone)]
 pub struct SolidRenderer {
-    pub color: Color,
+    pub color: RgbaColor,
     pub aabb: Aabb,
 }
 
 impl SolidRenderer {
-    pub fn new_centered(color: Color, size: f32) -> Self {
+    pub fn new_centered(color: RgbaColor, size: f32) -> Self {
         Self {
             color,
             aabb: Aabb::new_centered(Vec2::ZERO, Vec2::splat(size)),

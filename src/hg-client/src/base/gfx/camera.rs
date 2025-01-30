@@ -1,3 +1,4 @@
+use hg_common::{base::kinematic::Pos, utils::math::Aabb};
 use hg_ecs::{component, Obj, Query};
 use macroquad::{
     camera::{pop_camera_state, push_camera_state, set_camera, Camera},
@@ -5,8 +6,6 @@ use macroquad::{
     miniquad::window::screen_size,
     texture::RenderPass,
 };
-
-use crate::{base::kinematic::Pos, utils::math::Aabb};
 
 // === VirtualCameraSelector === //
 
