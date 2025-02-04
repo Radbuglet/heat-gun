@@ -94,29 +94,31 @@ impl ColliderBus {
         let env = pack!(@env => Bundle<infer_bundle!('_)>);
         let mut result = request.result_clear();
 
-        cbit::cbit!(for (collider, cx) in self.lookup(request.candidate_aabb()) {
-            let static ..env;
-            let static ..cx;
+        cbit::cbit!(
+            for (collider, cx) in self.lookup(request.candidate_aabb()) {
+                let static ..env;
+                let static ..cx;
 
-            if !predicate(collider) {
-                continue;
+                if !predicate(collider) {
+                    continue;
+                }
+
+                match collider.material {
+                    ColliderMat::Solid => {
+                        result = result.min(request.hull_cast(collider.aabb));
+                    }
+                    ColliderMat::Disabled => {
+                        // ignore
+                    }
+                    ColliderMat::Custom(mat) => {
+                        let entity = collider.entity();
+                        let local_result = (mat.cast_hull)(&mut WORLD, entity, request);
+
+                        result = result.min(local_result);
+                    }
+                }
             }
-
-            match collider.material {
-                ColliderMat::Solid => {
-                    result = result.min(request.hull_cast(collider.aabb));
-                }
-                ColliderMat::Disabled => {
-                    // ignore
-                }
-                ColliderMat::Custom(mat) => {
-                    let entity = collider.entity();
-                    let local_result = (mat.cast_hull)(&mut WORLD, entity, request);
-
-                    result = result.min(local_result);
-                }
-            }
-        });
+        );
 
         result
     }

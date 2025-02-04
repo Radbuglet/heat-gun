@@ -1,5 +1,8 @@
 [toolchain]
 
 # Repo: https://github.com/radbuglet/rust
-# Hash: 034a429e50007faaa57fd8757544a8d1abf39c42
-channel = "stage1"
+# Hash: db71c2bc4194c8760008f78c77d22da1fce0b884
+channel = "stage3"
+
+# # Latest upstream `rustc` nightly
+# channel = "nightly-2024-10-28"

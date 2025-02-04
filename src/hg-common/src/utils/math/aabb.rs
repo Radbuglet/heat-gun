@@ -362,7 +362,7 @@ impl AabbI {
         });
 
         let partial_x_diff = RangeDiff::of(self.x_range(), without.x_range());
-        let partial_rows = y_diff.excluded.into_range().flat_map(move |y| {
+        let partial_rows = y_diff.excluded.range().flat_map(move |y| {
             partial_x_diff
                 .included()
                 .map(move |x| validate_pos(IVec2::new(x, y)))
@@ -393,7 +393,7 @@ impl RangeDiff {
     }
 
     fn included(self) -> impl Iterator<Item = i32> {
-        self.included.into_iter().flat_map(|v| v.into_range())
+        self.included.into_iter().flat_map(|v| v.range())
     }
 }
 
@@ -421,9 +421,8 @@ mod tests {
         let without = CopyRange::new(without);
 
         assert_set_equality(
-            with.into_range()
-                .filter(|v| !without.into_range().contains(&v)),
-            RangeDiff::of(with.into_range(), without.into_range()).included(),
+            with.range().filter(|v| !without.range().contains(&v)),
+            RangeDiff::of(with.range(), without.range()).included(),
         );
     }
 

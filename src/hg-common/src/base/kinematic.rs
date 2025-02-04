@@ -3,7 +3,7 @@ use std::context::Bundle;
 use glam::Vec2;
 use hg_ecs::{component, entity::Component, Obj, Query, Resource};
 
-use crate::utils::math::{cancel_normal, HullCastRequest};
+use crate::utils::math::{cancel_normal, HullCastRequest, MoveAndSlide};
 
 use super::collide::bus::{Collider, ColliderLookupCx};
 
@@ -55,22 +55,18 @@ pub fn sys_apply_kinematics(dt: f32) {
         let bus = collider.expect_bus();
         let aabb = collider.aabb();
 
-        let mut desired_delta = vel.total() * dt;
-        let mut iter = 0;
+        let mut move_and_slide = MoveAndSlide::new(10, vel.total() * dt);
 
-        while desired_delta.length() > 0.001 && iter < 10 {
-            iter += 1;
-
+        while let Some(desired_delta) = move_and_slide.next_delta() {
             let hull_result =
                 bus.cast_hull(HullCastRequest::new(aabb, desired_delta), &mut predicate);
 
             pos.0 += desired_delta * hull_result.percent;
-            desired_delta *= 1.0 - hull_result.percent;
+            move_and_slide.update(hull_result);
 
             if let Some(normal) = hull_result.normal {
                 vel.artificial = cancel_normal(vel.artificial, normal);
                 vel.physical = cancel_normal(vel.physical, normal);
-                desired_delta = cancel_normal(desired_delta, normal);
             }
         }
     }

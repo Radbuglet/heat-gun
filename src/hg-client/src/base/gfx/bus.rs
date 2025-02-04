@@ -4,12 +4,7 @@ use std::{
     rc::Rc,
 };
 
-use hg_ecs::{
-    archetype::ComponentId,
-    component,
-    entity::Component,
-    AccessComp, Entity, WORLD,
-};
+use hg_ecs::{archetype::ComponentId, component, entity::Component, AccessComp, Entity, WORLD};
 use hg_utils::hash::{hash_map::Entry, hash_set, FxHashMap, FxHashSet};
 
 // === Graphics Bus === //
@@ -46,10 +41,7 @@ pub fn register_gfx(target: Entity) {
 fn find_gfx_inner<'a>(
     ancestor: Entity,
     id: ComponentId,
-    cx: Bundle<(
-        &'a WORLD,
-        &'a mut AccessComp<GraphicsNode>,
-    )>,
+    cx: Bundle<(&'a WORLD, &'a mut AccessComp<GraphicsNode>)>,
 ) -> &'a mut GfxNodeCollection {
     let static ..cx;
 

@@ -14,7 +14,7 @@ impl<T> CopyRange<T> {
         }
     }
 
-    pub fn into_range(self) -> Range<T> {
+    pub fn range(self) -> Range<T> {
         self.start..self.end
     }
 }
