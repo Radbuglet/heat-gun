@@ -1,10 +1,16 @@
+#![feature(context_injection)]
+
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
 
 use anyhow::Context;
-use hg_common::base::net::dev_cert::generate_dev_priv_key;
+use base::net::transport::{Transport, TransportEvent};
+use bytes::Bytes;
+use hg_common::base::net::{back_pressure::ErasedTaskGuard, dev_cert::generate_dev_priv_key};
 use quinn::crypto::rustls::QuicServerConfig;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
+
+pub mod base;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -37,17 +43,25 @@ async fn main() -> anyhow::Result<()> {
     // Setup server
     let bind_addr = SocketAddr::from_str("127.0.0.1:8080").unwrap();
     let config = quinn::ServerConfig::with_crypto(crypto);
-    let endpoint = quinn::Endpoint::server(config, bind_addr)
-        .with_context(|| format!("failed to create endpoint on `{bind_addr}`"))?;
+    let mut transport = Transport::new(config, bind_addr).await?;
 
-    // Run server main loop
-    tracing::info!("Listening on `{bind_addr}`!");
+    loop {
+        let Some(ev) = transport.process_async().await else {
+            continue;
+        };
 
-    while let Some(incoming) = endpoint.accept().await {
-        let incoming = incoming.accept()?.await?;
-        tracing::info!("Got connection from {}", incoming.remote_address());
-
-        let (tx, rx) = incoming.open_bi().await?;
+        match ev {
+            TransportEvent::Connected { peer } => {
+                transport.peer_send_reliable(
+                    peer,
+                    Bytes::from_static(b"hello world"),
+                    ErasedTaskGuard::noop(),
+                );
+            }
+            TransportEvent::Disconnected { peer, cause } => todo!(),
+            TransportEvent::DataReceived { peer, packet } => todo!(),
+            TransportEvent::Shutdown { cause } => todo!(),
+        }
     }
 
     Ok(())

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.95"
+bytes = "1.10.0"
 cbit = "0.1.0"
 derive-where = "1.2.7"
 directories-next = "2.0.0"
@@ -17,7 +18,10 @@ rcgen = "0.13.2"
 rustls = "0.23.22"
 scopeguard = "1.2.0"
 serde = { version = "1.0.217", features = ["derive"] }
+smallbox = "0.8.6"
 smallvec = "1.13.2"
+thiserror = "2.0.11"
 thunderdome = "0.6.1"
-tokio = "1.43.0"
+tokio-util = { version = "0.7.13", features = ["codec", "hashbrown"] }
 tracing = "0.1.41"
+varuint = "0.7.1"
