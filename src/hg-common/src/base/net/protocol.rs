@@ -1,7 +1,7 @@
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub enum SocketCloseReason {
-    Crash,
-    Application,
+    Crash = 1,
+    Application = 2,
 }
 
 impl SocketCloseReason {

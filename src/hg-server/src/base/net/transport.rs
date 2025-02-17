@@ -1,5 +1,5 @@
 use std::{
-    fmt, io,
+    fmt,
     net::SocketAddr,
     num::NonZeroU64,
     pin::pin,
@@ -10,17 +10,20 @@ use anyhow::Context as _;
 use bytes::Bytes;
 use futures::{FutureExt, StreamExt as _};
 use hg_common::{
-    base::net::{back_pressure::ErasedTaskGuard, codec::FrameDecoder, protocol::SocketCloseReason},
+    base::net::{
+        back_pressure::ErasedTaskGuard, codec::FrameDecoder, protocol::SocketCloseReason,
+        transport::filter_framed_read_failure,
+    },
     utils::lang::{
-        absorb_result_std, catch_termination_async, worker_panic_error, FusedFuture, MultiError,
-        MultiResult, PANIC_ERR_MSG,
+        absorb_result_std, catch_termination_async, flatten_tokio_join_result, worker_panic_error,
+        FusedFuture, MultiError, MultiResult,
     },
 };
 use hg_utils::hash::FxHashMap;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::codec::FramedRead;
-use tracing::Instrument as _;
+use tracing::{instrument, Instrument};
 
 // === Tidbits === //
 
@@ -99,11 +102,7 @@ impl Transport {
             next_peer_id: NonZeroU64::new(1).unwrap(),
         };
 
-        tokio::spawn(
-            listen_worker
-                .run_listen(config, bind_addr)
-                .instrument(tracing::info_span!("listen worker")),
-        );
+        tokio::spawn(listen_worker.run_listen(config, bind_addr));
 
         Self {
             event_rx,
@@ -183,6 +182,7 @@ struct TransportListenWorker {
 }
 
 impl TransportListenWorker {
+    #[instrument(skip_all, name = "listen worker")]
     async fn run_listen(self, config: quinn::ServerConfig, bind_addr: SocketAddr) {
         let listen_state = self.listen_state.clone();
 
@@ -190,7 +190,7 @@ impl TransportListenWorker {
             let cause = cause.unwrap_or_else(|| Err(worker_panic_error()));
 
             if let Err(err) = &cause {
-                tracing::error!("server listener thread crashed:\n{err:?}");
+                tracing::error!("server listener task crashed:\n{err:?}");
             }
 
             listen_state.send_event(TransportEvent::Shutdown { cause });
@@ -231,9 +231,7 @@ impl TransportListenWorker {
                 conn,
             };
 
-            tokio::spawn(peer_worker.run_conn(send_action_rx).instrument(
-                tracing::info_span!(parent: None, "connection worker", peer = %peer_id),
-            ));
+            tokio::spawn(peer_worker.run_conn(send_action_rx));
         }
 
         // (only reachable if `endpoint` is manually closed)
@@ -250,6 +248,7 @@ struct TransportPeerWorker {
 }
 
 impl TransportPeerWorker {
+    #[instrument(skip_all, name = "peer worker", fields(peer = %self.peer_state.peer_id))]
     async fn run_conn(self, send_action_rx: mpsc::UnboundedReceiver<PeerSendAction>) {
         tracing::info!("Got connection from {}", self.peer_state.remote_addr);
 
@@ -300,38 +299,40 @@ impl TransportPeerWorker {
             .map_err(MultiError::new)
             .context("failed to open main stream")?;
 
-        // Spawn two threads to handle the read and write sides of this connection separately.
-        let rx_thread = pin!(tokio::spawn(self.clone().run_conn_rx(rx).in_current_span())
-            .map(|v| flatten_join_result(v).context("receiver thread crashed")));
+        // Spawn two tasks to handle the read and write sides of this connection separately.
+        let rx_task = self.clone().run_conn_rx(rx).in_current_span();
+        let rx_task = pin!(tokio::spawn(rx_task)
+            .map(|v| flatten_tokio_join_result(v).context("receiver task crashed")));
 
-        let tx_thread = pin!(tokio::spawn(
-            self.clone()
-                .run_conn_tx(tx, send_action_rx)
-                .in_current_span()
-        )
-        .map(|v| flatten_join_result(v).context("transmission thread crashed")));
+        let tx_task = self
+            .clone()
+            .run_conn_tx(tx, send_action_rx)
+            .in_current_span();
 
-        let mut rx_thread = FusedFuture::new(rx_thread);
-        let mut tx_thread = FusedFuture::new(tx_thread);
+        let tx_task = pin!(tokio::spawn(tx_task)
+            .map(|v| flatten_tokio_join_result(v).context("transmission task crashed")));
+
+        let mut rx_task = FusedFuture::new(rx_task);
+        let mut tx_task = FusedFuture::new(tx_task);
 
         // Find the side which terminates first.
         let first = tokio::select! {
-            first = rx_thread.wait() => first.unwrap(),
-            first = tx_thread.wait() => first.unwrap(),
+            first = rx_task.wait() => first.unwrap(),
+            first = tx_task.wait() => first.unwrap(),
         };
 
         // Ensure that the other side also terminates
         if first.is_err() {
-            // If `res` was not erroneous, we know the first thread to finish must have encountered
+            // If `res` was not erroneous, we know the first task to finish must have encountered
             // a socket EOF, which occurs on both sides of the connection. Hence, there is no need
-            // to do anything to stop the other thread.
+            // to do anything to stop the other task.
 
             // If it was erroneous, we need to close the socket ourselves.
             self.conn.close(SocketCloseReason::Crash.code().into(), &[]);
         }
 
-        // Ensure that the other side terminates before cleaning up the thread.
-        let (lhs, rhs) = tokio::join!(rx_thread.wait(), tx_thread.wait());
+        // Ensure that the other side terminates before cleaning up the task.
+        let (lhs, rhs) = tokio::join!(rx_task.wait(), tx_task.wait());
         let second = lhs.or(rhs).unwrap();
 
         // Parse the connection error.
@@ -371,28 +372,9 @@ impl TransportPeerWorker {
         while let Some(packet) = rx.next().await {
             let packet = match packet {
                 Ok(v) => v,
-                Err(e) => {
-                    use quinn::ReadError::*;
-
-                    return match e
-                        .downcast_ref::<io::Error>()
-                        .and_then(|v| v.get_ref())
-                        .and_then(|v| v.downcast_ref::<quinn::ReadError>())
-                    {
-                        Some(e) => match e {
-                            // These will already be reported by `self.conn.close_reason()`.
-                            Reset(_) | ConnectionLost(_) => Ok(()),
-
-                            // Basically an EOF.
-                            ClosedStream => Ok(()),
-
-                            // We don't use these features.
-                            IllegalOrderedRead | ZeroRttRejected => unreachable!(),
-                        },
-                        None => Err(e),
-                    };
-                }
+                Err(e) => return filter_framed_read_failure(e),
             };
+
             self.listen_state.send_event(TransportEvent::DataReceived {
                 peer: self.peer_state.peer_id,
                 packet,
@@ -412,7 +394,7 @@ impl TransportPeerWorker {
             let send_action = tokio::select! {
                 send_action = send_action_rx.recv() => {
                     // Unwrap OK: The sender is stored in the `TransportPeerState` associated with
-                    // this connection and that object isn't destroyed until this thread exists.
+                    // this connection and that object isn't destroyed until this task exists.
                     send_action.unwrap()
                 },
                 _err = self.conn.closed() => {
@@ -442,15 +424,5 @@ impl TransportPeerWorker {
         }
 
         Ok(())
-    }
-}
-
-fn flatten_join_result<T>(
-    res: Result<anyhow::Result<T>, tokio::task::JoinError>,
-) -> anyhow::Result<T> {
-    match res {
-        Ok(Ok(v)) => Ok(v),
-        Ok(Err(err)) => Err(err),
-        Err(err) => Err(anyhow::Error::new(err).context(PANIC_ERR_MSG)),
     }
 }

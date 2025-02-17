@@ -7,6 +7,7 @@ use std::{
 
 use scopeguard::ScopeGuard;
 use smallvec::SmallVec;
+use tokio::task;
 
 // === Error catching === //
 
@@ -55,6 +56,16 @@ pub fn absorb_result_anyhow<T>(op: &str, f: impl FnOnce() -> anyhow::Result<T>) 
             tracing::debug!("failed to {op}: {err:?}");
             None
         }
+    }
+}
+
+pub fn flatten_tokio_join_result<T>(
+    res: Result<anyhow::Result<T>, task::JoinError>,
+) -> anyhow::Result<T> {
+    match res {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(err)) => Err(err),
+        Err(err) => Err(anyhow::Error::new(err).context(PANIC_ERR_MSG)),
     }
 }
 
