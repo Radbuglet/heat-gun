@@ -7,11 +7,14 @@ use hg_ecs::{bind, Entity, World};
 use macroquad::{math::Vec2, time::get_frame_time};
 
 use crate::{
-    base::gfx::{
-        bus::find_gfx,
-        camera::{sys_update_virtual_cameras, VirtualCameraSelector},
-        sprite::SolidRenderer,
-        tile::TileRenderer,
+    base::{
+        gfx::{
+            bus::find_gfx,
+            camera::{sys_update_virtual_cameras, VirtualCameraSelector},
+            sprite::SolidRenderer,
+            tile::TileRenderer,
+        },
+        net::NetManager,
     },
     game::{
         debug::sys_update_debug,
@@ -22,6 +25,8 @@ use crate::{
 
 pub fn world_init(world: &mut World) {
     bind!(world);
+
+    Entity::root().add(NetManager::new().unwrap());
 
     let level = spawn_level(Entity::root());
 

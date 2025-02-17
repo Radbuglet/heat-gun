@@ -1,4 +1,9 @@
-use std::{error::Error, fmt, future::Future};
+use std::{
+    error::Error,
+    fmt,
+    future::Future,
+    panic::{self, AssertUnwindSafe},
+};
 
 use scopeguard::ScopeGuard;
 use smallvec::SmallVec;
@@ -9,6 +14,14 @@ pub const PANIC_ERR_MSG: &str = "worker thread panicked";
 
 pub fn worker_panic_error() -> anyhow::Error {
     anyhow::anyhow!(PANIC_ERR_MSG)
+}
+
+pub fn catch_termination<T>(f: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    match panic::catch_unwind(AssertUnwindSafe(|| f())) {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(v)) => Err(v),
+        Err(_panic) => Err(worker_panic_error()),
+    }
 }
 
 pub async fn catch_termination_async<T>(
@@ -45,6 +58,29 @@ pub fn absorb_result_anyhow<T>(op: &str, f: impl FnOnce() -> anyhow::Result<T>) 
     }
 }
 
+// === try macros === //
+
+#[macro_export]
+macro_rules! try_sync {
+    ($($body:tt)*) => {
+        || -> anyhow::Result<_> { Ok({$($body)*}) }()
+    };
+}
+
+pub use try_sync;
+
+#[macro_export]
+macro_rules! try_async {
+    ($($body:tt)*) => {{
+        let res: ::anyhow::Result<_> = async {
+            Ok({ $($body)* })
+        }.await;
+        res
+    }};
+}
+
+pub use try_async;
+
 // === MultiError === //
 
 pub type MultiResult<T> = Result<T, MultiError>;
@@ -61,11 +97,13 @@ impl fmt::Display for MultiError {
 
         write!(f, "{:#}", self.primary_err())?;
 
-        writeln!(f, "Secondary errors:")?;
-        writeln!(f)?;
+        if !self.secondary_errs().is_empty() {
+            writeln!(f, "Secondary errors:")?;
+            writeln!(f)?;
 
-        for secondary in self.secondary_errs() {
-            writeln!(f, "{secondary:#}")?;
+            for secondary in self.secondary_errs() {
+                writeln!(f, "{secondary:#}")?;
+            }
         }
 
         Ok(())
@@ -79,13 +117,17 @@ impl fmt::Debug for MultiError {
             return f.debug_tuple("MultiError").field(&self.0).finish();
         }
 
-        writeln!(f, "{:?}", self.primary_err())?;
-        writeln!(f)?;
-        writeln!(f, "Secondary errors:")?;
-        writeln!(f)?;
+        write!(f, "{:?}", self.primary_err())?;
 
-        for secondary in self.secondary_errs() {
-            writeln!(f, "{secondary:?}")?;
+        if !self.secondary_errs().is_empty() {
+            writeln!(f)?;
+            writeln!(f)?;
+            writeln!(f, "Secondary errors:")?;
+            writeln!(f)?;
+
+            for secondary in self.secondary_errs() {
+                writeln!(f, "{secondary:?}")?;
+            }
         }
 
         Ok(())

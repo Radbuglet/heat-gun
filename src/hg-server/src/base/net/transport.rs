@@ -1,4 +1,5 @@
 use std::{
+    fmt, io,
     net::SocketAddr,
     num::NonZeroU64,
     pin::pin,
@@ -7,7 +8,7 @@ use std::{
 
 use anyhow::Context as _;
 use bytes::Bytes;
-use futures::StreamExt as _;
+use futures::{FutureExt, StreamExt as _};
 use hg_common::{
     base::net::{back_pressure::ErasedTaskGuard, codec::FrameDecoder, protocol::SocketCloseReason},
     utils::lang::{
@@ -19,6 +20,7 @@ use hg_utils::hash::FxHashMap;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::codec::FramedRead;
+use tracing::Instrument as _;
 
 // === Tidbits === //
 
@@ -28,6 +30,12 @@ pub struct PeerDisconnectError;
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct RawPeerId(NonZeroU64);
+
+impl fmt::Display for RawPeerId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 #[derive(Debug)]
 pub enum TransportEvent {
@@ -50,7 +58,7 @@ pub enum TransportEvent {
 #[derive(Debug)]
 pub enum PeerSendAction {
     Reliable {
-        data: Bytes,
+        pre_framed: Bytes,
         task_guard: ErasedTaskGuard,
     },
     Disconnect(Bytes),
@@ -78,10 +86,7 @@ struct TransportPeerState {
 }
 
 impl Transport {
-    pub async fn new(config: quinn::ServerConfig, bind_addr: SocketAddr) -> anyhow::Result<Self> {
-        let endpoint = quinn::Endpoint::server(config, bind_addr)
-            .with_context(|| format!("failed to create endpoint on `{bind_addr}`"))?;
-
+    pub fn new(config: quinn::ServerConfig, bind_addr: SocketAddr) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
 
         let listen_state = Arc::new(TransportListenState {
@@ -94,12 +99,16 @@ impl Transport {
             next_peer_id: NonZeroU64::new(1).unwrap(),
         };
 
-        tokio::spawn(listen_worker.run_listen(endpoint));
+        tokio::spawn(
+            listen_worker
+                .run_listen(config, bind_addr)
+                .instrument(tracing::info_span!("listen worker")),
+        );
 
-        Ok(Self {
+        Self {
             event_rx,
             listen_state,
-        })
+        }
     }
 
     fn peer(&self, id: RawPeerId) -> Result<Arc<TransportPeerState>, PeerDisconnectError> {
@@ -127,8 +136,19 @@ impl Transport {
         });
     }
 
-    pub fn peer_send_reliable(&self, id: RawPeerId, data: Bytes, task_guard: ErasedTaskGuard) {
-        self.peer_send(id, PeerSendAction::Reliable { data, task_guard });
+    pub fn peer_send_reliable(
+        &self,
+        id: RawPeerId,
+        pre_framed: Bytes,
+        task_guard: ErasedTaskGuard,
+    ) {
+        self.peer_send(
+            id,
+            PeerSendAction::Reliable {
+                pre_framed,
+                task_guard,
+            },
+        );
     }
 
     pub fn peer_disconnect(&self, id: RawPeerId, data: Bytes) {
@@ -163,10 +183,10 @@ struct TransportListenWorker {
 }
 
 impl TransportListenWorker {
-    async fn run_listen(self, endpoint: quinn::Endpoint) {
+    async fn run_listen(self, config: quinn::ServerConfig, bind_addr: SocketAddr) {
         let listen_state = self.listen_state.clone();
 
-        catch_termination_async(self.run_listen_inner(endpoint), |cause| {
+        catch_termination_async(self.run_listen_inner(config, bind_addr), |cause| {
             let cause = cause.unwrap_or_else(|| Err(worker_panic_error()));
 
             if let Err(err) = &cause {
@@ -178,7 +198,14 @@ impl TransportListenWorker {
         .await;
     }
 
-    async fn run_listen_inner(mut self, endpoint: quinn::Endpoint) -> anyhow::Result<()> {
+    async fn run_listen_inner(
+        mut self,
+        config: quinn::ServerConfig,
+        bind_addr: SocketAddr,
+    ) -> anyhow::Result<()> {
+        let endpoint = quinn::Endpoint::server(config, bind_addr)
+            .with_context(|| format!("failed to create endpoint on `{bind_addr}`"))?;
+
         tracing::info!("Listening on `{}`!", endpoint.local_addr().unwrap());
 
         while let Some(incoming) = endpoint.accept().await {
@@ -190,9 +217,7 @@ impl TransportListenWorker {
                 .checked_add(1)
                 .context("created too many peers")?;
 
-            tracing::info!("Got connection from {remote_addr}, {peer_id:?}");
-
-            let (send_action_tx, framed_send_rx) = mpsc::unbounded_channel();
+            let (send_action_tx, send_action_rx) = mpsc::unbounded_channel();
 
             let peer_state = Arc::new(TransportPeerState {
                 peer_id,
@@ -206,7 +231,9 @@ impl TransportListenWorker {
                 conn,
             };
 
-            tokio::spawn(peer_worker.run_conn(framed_send_rx));
+            tokio::spawn(peer_worker.run_conn(send_action_rx).instrument(
+                tracing::info_span!(parent: None, "connection worker", peer = %peer_id),
+            ));
         }
 
         // (only reachable if `endpoint` is manually closed)
@@ -224,6 +251,8 @@ struct TransportPeerWorker {
 
 impl TransportPeerWorker {
     async fn run_conn(self, send_action_rx: mpsc::UnboundedReceiver<PeerSendAction>) {
+        tracing::info!("Got connection from {}", self.peer_state.remote_addr);
+
         // Add the peer to the peer map
         self.listen_state
             .peer_map
@@ -235,12 +264,9 @@ impl TransportPeerWorker {
         catch_termination_async(self.clone().run_conn_inner(send_action_rx), |cause| {
             let cause = cause.unwrap_or_else(|| Err(worker_panic_error().into()));
 
-            if let Err(error) = &cause {
-                tracing::error!(
-                    "Socket handler thread for {:?} ({}) crashed:\n{error:?}",
-                    self.peer_state.peer_id,
-                    self.peer_state.remote_addr,
-                );
+            match &cause {
+                Ok(()) => tracing::info!("Peer disconnected."),
+                Err(error) => tracing::error!("Socket handler crashed:\n{error:?}"),
             }
 
             self.listen_state
@@ -267,24 +293,34 @@ impl TransportPeerWorker {
         });
 
         // We ask the user to send the initial packet.
-        let (tx, rx) = self.conn.accept_bi().await.map_err(MultiError::new)?;
+        let (tx, rx) = self
+            .conn
+            .accept_bi()
+            .await
+            .map_err(MultiError::new)
+            .context("failed to open main stream")?;
 
         // Spawn two threads to handle the read and write sides of this connection separately.
-        let tx_thread = pin!(tokio::spawn(self.clone().run_conn_rx(rx)));
-        let rx_thread = pin!(tokio::spawn(self.clone().run_conn_tx(tx, send_action_rx)));
+        let rx_thread = pin!(tokio::spawn(self.clone().run_conn_rx(rx).in_current_span())
+            .map(|v| flatten_join_result(v).context("receiver thread crashed")));
 
-        let mut tx_thread = FusedFuture::new(tx_thread);
+        let tx_thread = pin!(tokio::spawn(
+            self.clone()
+                .run_conn_tx(tx, send_action_rx)
+                .in_current_span()
+        )
+        .map(|v| flatten_join_result(v).context("transmission thread crashed")));
+
         let mut rx_thread = FusedFuture::new(rx_thread);
+        let mut tx_thread = FusedFuture::new(tx_thread);
 
         // Find the side which terminates first.
         let first = tokio::select! {
-            first = tx_thread.wait() => first.unwrap(),
             first = rx_thread.wait() => first.unwrap(),
+            first = tx_thread.wait() => first.unwrap(),
         };
 
         // Ensure that the other side also terminates
-        let first = flatten_join_result(first);
-
         if first.is_err() {
             // If `res` was not erroneous, we know the first thread to finish must have encountered
             // a socket EOF, which occurs on both sides of the connection. Hence, there is no need
@@ -295,10 +331,33 @@ impl TransportPeerWorker {
         }
 
         // Ensure that the other side terminates before cleaning up the thread.
-        let (lhs, rhs) = tokio::join!(tx_thread.wait(), rx_thread.wait());
-        let second = flatten_join_result(lhs.or(rhs).unwrap());
+        let (lhs, rhs) = tokio::join!(rx_thread.wait(), tx_thread.wait());
+        let second = lhs.or(rhs).unwrap();
 
-        MultiError::from_iter([first, second])
+        // Parse the connection error.
+        let third = {
+            use quinn::ConnectionError::*;
+
+            let err = self.conn.close_reason().unwrap();
+            #[rustfmt::skip]
+            let is_err = match err {
+                VersionMismatch
+                | TransportError(_)
+                | ConnectionClosed(_)
+                | Reset
+                | TimedOut
+                | CidsExhausted => true,
+                ApplicationClosed(_) | LocallyClosed => false,
+            };
+
+            if is_err {
+                Err(anyhow::Error::new(err).context("error ocurred in connection"))
+            } else {
+                Ok(())
+            }
+        };
+
+        MultiError::from_iter([first, second, third])
     }
 
     async fn run_conn_rx(self, rx: quinn::RecvStream) -> anyhow::Result<()> {
@@ -310,8 +369,30 @@ impl TransportPeerWorker {
         ));
 
         while let Some(packet) = rx.next().await {
-            let packet = packet?;
+            let packet = match packet {
+                Ok(v) => v,
+                Err(e) => {
+                    use quinn::ReadError::*;
 
+                    return match e
+                        .downcast_ref::<io::Error>()
+                        .and_then(|v| v.get_ref())
+                        .and_then(|v| v.downcast_ref::<quinn::ReadError>())
+                    {
+                        Some(e) => match e {
+                            // These will already be reported by `self.conn.close_reason()`.
+                            Reset(_) | ConnectionLost(_) => Ok(()),
+
+                            // Basically an EOF.
+                            ClosedStream => Ok(()),
+
+                            // We don't use these features.
+                            IllegalOrderedRead | ZeroRttRejected => unreachable!(),
+                        },
+                        None => Err(e),
+                    };
+                }
+            };
             self.listen_state.send_event(TransportEvent::DataReceived {
                 peer: self.peer_state.peer_id,
                 packet,
@@ -334,18 +415,20 @@ impl TransportPeerWorker {
                     // this connection and that object isn't destroyed until this thread exists.
                     send_action.unwrap()
                 },
-                err = self.conn.closed() => {
-                    if let quinn::ConnectionError::LocallyClosed = err {
-                        return Ok(());
-                    }
-
-                    return Err(err.into());
+                _err = self.conn.closed() => {
+                    // The `run_conn_inner` driver will interpret the `close_reason()` for us. We
+                    // should only return `Err(())` if some novel kind of error occurs.
+                    return Ok(());
                 }
             };
 
             // Process it!
             match send_action {
-                PeerSendAction::Reliable { data, task_guard } => {
+                PeerSendAction::Reliable {
+                    pre_framed: data,
+                    task_guard,
+                } => {
+                    // TODO: parse error
                     tx.write_all(&data).await?;
                     drop(task_guard);
                 }

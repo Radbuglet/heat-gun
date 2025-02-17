@@ -593,6 +593,8 @@ dependencies = [
 name = "hg-client"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "bytes",
  "cbit",
  "derive-where",
  "fastrand",
@@ -600,9 +602,16 @@ dependencies = [
  "hg-ecs",
  "hg-utils",
  "macroquad",
+ "quinn",
+ "rustls",
  "scopeguard",
  "smallvec",
+ "thiserror 2.0.11",
  "thunderdome",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

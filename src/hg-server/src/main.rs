@@ -3,7 +3,7 @@
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
 
 use anyhow::Context;
-use base::net::transport::{Transport, TransportEvent};
+use base::net::{Transport, TransportEvent};
 use bytes::Bytes;
 use hg_common::base::net::{back_pressure::ErasedTaskGuard, dev_cert::generate_dev_priv_key};
 use quinn::crypto::rustls::QuicServerConfig;
@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
     // Setup server
     let bind_addr = SocketAddr::from_str("127.0.0.1:8080").unwrap();
     let config = quinn::ServerConfig::with_crypto(crypto);
-    let mut transport = Transport::new(config, bind_addr).await?;
+    let mut transport = Transport::new(config, bind_addr);
 
     loop {
         let Some(ev) = transport.process_async().await else {
@@ -52,17 +52,22 @@ async fn main() -> anyhow::Result<()> {
 
         match ev {
             TransportEvent::Connected { peer } => {
+                tracing::info!("Connected: {peer:?}");
                 transport.peer_send_reliable(
                     peer,
                     Bytes::from_static(b"hello world"),
                     ErasedTaskGuard::noop(),
                 );
             }
-            TransportEvent::Disconnected { peer, cause } => todo!(),
-            TransportEvent::DataReceived { peer, packet } => todo!(),
-            TransportEvent::Shutdown { cause } => todo!(),
+            TransportEvent::Disconnected { peer, cause } => {
+                tracing::info!("Disconnected: {peer:?}, {cause:?}");
+            }
+            TransportEvent::DataReceived { peer, packet } => {
+                tracing::info!("Packet received: {peer:?}, {packet:?}");
+            }
+            TransportEvent::Shutdown { cause } => {
+                tracing::error!("shutdown: {cause:?}");
+            }
         }
     }
-
-    Ok(())
 }
