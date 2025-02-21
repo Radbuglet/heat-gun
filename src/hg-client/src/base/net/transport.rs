@@ -5,7 +5,7 @@ use bytes::Bytes;
 use futures::StreamExt as _;
 use hg_common::{
     base::net::{
-        back_pressure::ErasedTaskGuard,
+        back_pressure::{BackPressureAsync, ErasedTaskGuard},
         codec::FrameDecoder,
         protocol::SocketCloseReason,
         transport::{filter_framed_read_failure, run_transport_data_handler},
@@ -27,8 +27,13 @@ pub struct ShutdownError;
 #[derive(Debug)]
 pub enum TransportEvent {
     Connected,
-    Disconnected { cause: anyhow::Result<()> },
-    DataReceived { packet: Bytes },
+    Disconnected {
+        cause: anyhow::Result<()>,
+    },
+    DataReceived {
+        packet: Bytes,
+        task: ErasedTaskGuard,
+    },
 }
 
 #[derive(Debug)]
@@ -127,7 +132,7 @@ impl TransportWorker {
             let cause = cause.unwrap_or_else(|| Err(worker_panic_error()));
 
             if let Err(err) = &cause {
-                tracing::error!("server listener thread crashed:\n{err:?}");
+                tracing::error!("client listener thread crashed:\n{err:?}");
             }
 
             state.send_event(TransportEvent::Disconnected { cause });
@@ -155,6 +160,8 @@ impl TransportWorker {
 
         tracing::info!("Connected!");
 
+        state.send_event(TransportEvent::Connected);
+
         let worker = Arc::new(TransportWorker { state, conn });
 
         // Open the main stream
@@ -181,6 +188,7 @@ impl TransportWorker {
     }
 
     async fn run_conn_rx(self: Arc<Self>, rx: quinn::RecvStream) -> anyhow::Result<()> {
+        let mut pressure = BackPressureAsync::new(1024);
         let mut rx = pin!(FramedRead::new(
             rx,
             FrameDecoder {
@@ -194,8 +202,21 @@ impl TransportWorker {
                 Err(e) => return filter_framed_read_failure(e),
             };
 
+            let task = ErasedTaskGuard::new(pressure.start(packet.len()));
+
             self.state
-                .send_event(TransportEvent::DataReceived { packet });
+                .send_event(TransportEvent::DataReceived { packet, task });
+
+            tokio::select! {
+                _ = pressure.wait() => {
+                    // (fallthrough)
+                }
+                _err = self.conn.closed() => {
+                    // The `run_conn_inner` driver will interpret the `close_reason()` for us. We
+                    // should only return `Err(())` if some novel kind of error occurs.
+                    return Ok(());
+                }
+            };
         }
 
         Ok(())

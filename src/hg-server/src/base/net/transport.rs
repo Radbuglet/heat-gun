@@ -11,7 +11,9 @@ use bytes::Bytes;
 use futures::{FutureExt, StreamExt as _};
 use hg_common::{
     base::net::{
-        back_pressure::ErasedTaskGuard, codec::FrameDecoder, protocol::SocketCloseReason,
+        back_pressure::{BackPressureAsync, ErasedTaskGuard},
+        codec::FrameDecoder,
+        protocol::SocketCloseReason,
         transport::filter_framed_read_failure,
     },
     utils::lang::{
@@ -52,6 +54,7 @@ pub enum TransportEvent {
     DataReceived {
         peer: RawPeerId,
         packet: Bytes,
+        task: ErasedTaskGuard,
     },
     Shutdown {
         cause: anyhow::Result<()>,
@@ -362,6 +365,7 @@ impl TransportPeerWorker {
     }
 
     async fn run_conn_rx(self, rx: quinn::RecvStream) -> anyhow::Result<()> {
+        let mut pressure = BackPressureAsync::new(1024);
         let mut rx = pin!(FramedRead::new(
             rx,
             FrameDecoder {
@@ -375,10 +379,24 @@ impl TransportPeerWorker {
                 Err(e) => return filter_framed_read_failure(e),
             };
 
+            let task = ErasedTaskGuard::new(pressure.start(packet.len()));
+
             self.listen_state.send_event(TransportEvent::DataReceived {
                 peer: self.peer_state.peer_id,
                 packet,
+                task,
             });
+
+            tokio::select! {
+                _ = pressure.wait() => {
+                    // (fallthrough)
+                }
+                _err = self.conn.closed() => {
+                    // The `run_conn_inner` driver will interpret the `close_reason()` for us. We
+                    // should only return `Err(())` if some novel kind of error occurs.
+                    return Ok(());
+                }
+            };
         }
 
         Ok(())

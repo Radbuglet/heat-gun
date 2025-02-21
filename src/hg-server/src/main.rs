@@ -1,11 +1,10 @@
 #![feature(context_injection)]
 
-use std::{net::SocketAddr, str::FromStr, sync::Arc};
+use std::{net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use base::net::{Transport, TransportEvent};
-use bytes::Bytes;
-use hg_common::base::net::{back_pressure::ErasedTaskGuard, dev_cert::generate_dev_priv_key};
+use hg_common::base::net::dev_cert::generate_dev_priv_key;
 use quinn::crypto::rustls::QuicServerConfig;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
@@ -53,17 +52,16 @@ async fn main() -> anyhow::Result<()> {
         match ev {
             TransportEvent::Connected { peer } => {
                 tracing::info!("Connected: {peer:?}");
-                transport.peer_send_reliable(
-                    peer,
-                    Bytes::from_static(b"hello world"),
-                    ErasedTaskGuard::noop(),
-                );
             }
             TransportEvent::Disconnected { peer, cause } => {
                 tracing::info!("Disconnected: {peer:?}, {cause:?}");
             }
-            TransportEvent::DataReceived { peer, packet } => {
+            TransportEvent::DataReceived { peer, packet, task } => {
                 tracing::info!("Packet received: {peer:?}, {packet:?}");
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(1000)).await;
+                    drop(task);
+                });
             }
             TransportEvent::Shutdown { cause } => {
                 tracing::error!("shutdown: {cause:?}");

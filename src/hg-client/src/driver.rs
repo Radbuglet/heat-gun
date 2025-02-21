@@ -1,12 +1,13 @@
-use bytes::Bytes;
+use bytes::BytesMut;
 use hg_common::base::{
     collide::{bus::sys_flush_colliders, update::sys_update_colliders},
     debug::DebugDraw,
     kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame, Pos},
-    net::back_pressure::ErasedTaskGuard,
+    net::{back_pressure::ErasedTaskGuard, codec::FrameEncoder},
 };
-use hg_ecs::{bind, Entity, Obj, Query, World};
+use hg_ecs::{bind, Entity, World};
 use macroquad::{math::Vec2, time::get_frame_time};
+use tokio_util::codec::Encoder as _;
 
 use crate::{
     base::{
@@ -16,12 +17,12 @@ use crate::{
             sprite::SolidRenderer,
             tile::TileRenderer,
         },
-        net::NetManager,
+        net::{NetManager, TransportEvent},
     },
     game::{
         debug::sys_update_debug,
         level::spawn_level,
-        player::{spawn_player, sys_update_player_camera, sys_update_players, PlayerController},
+        player::{spawn_player, sys_update_player_camera, sys_update_players},
     },
 };
 
@@ -62,16 +63,27 @@ pub fn world_update() {
     sys_update_virtual_cameras();
     sys_update_debug();
 
-    for (pos, _pl) in Query::<(Obj<Pos>, Obj<PlayerController>)>::new() {
-        Entity::root().get::<NetManager>().transport.send_reliable(
-            Bytes::from_iter(
-                [8].into_iter()
-                    .chain(pos.0.x.to_be_bytes())
-                    .chain(pos.0.y.to_be_bytes()),
-            ),
-            ErasedTaskGuard::noop(),
-        );
+    let mut nm = Entity::root().get::<NetManager>();
+
+    while let Some(ev) = nm.transport.process_non_blocking() {
+        match ev {
+            TransportEvent::Connected => {
+                tracing::info!("Connected");
+            }
+            TransportEvent::Disconnected { cause } => {
+                tracing::info!("Disconnected: {cause:?}");
+            }
+            TransportEvent::DataReceived { packet, task } => {
+                tracing::info!("DataReceived: {packet:?}");
+                drop(task);
+            }
+        }
     }
+
+    let mut packet = BytesMut::new();
+    FrameEncoder.encode(&[0; 64][..], &mut packet).unwrap();
+    nm.transport
+        .send_reliable(packet.freeze(), ErasedTaskGuard::noop());
 }
 
 pub fn world_render() {
