@@ -23,6 +23,14 @@ impl Default for FrameEncoder {
     }
 }
 
+impl Clone for FrameEncoder {
+    fn clone(&self) -> Self {
+        let mut clone = Self::new();
+        clone.data_mut().extend_from_slice(&self.data()[..]);
+        clone
+    }
+}
+
 impl FrameEncoder {
     pub fn new() -> Self {
         let mut data = BytesMut::new();

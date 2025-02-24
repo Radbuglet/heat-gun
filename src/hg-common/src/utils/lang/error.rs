@@ -74,11 +74,20 @@ pub fn flatten_tokio_join_result<T>(
 #[macro_export]
 macro_rules! try_sync {
     ($($body:tt)*) => {
-        || -> anyhow::Result<_> { Ok({$($body)*}) }()
+        || -> ::anyhow::Result<_> { ::anyhow::Result::Ok({$($body)*}) }()
     };
 }
 
 pub use try_sync;
+
+#[macro_export]
+macro_rules! try_sync_opt {
+    ($($body:tt)*) => {
+        || -> ::core::option::Option<_> { ::core::option::Option::Some({$($body)*}) }()
+    };
+}
+
+pub use try_sync_opt;
 
 #[macro_export]
 macro_rules! try_async {
