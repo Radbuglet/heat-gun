@@ -1,9 +1,63 @@
+use std::fmt;
+
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use serde::Serialize;
-use tokio_util::codec::{Decoder, Encoder};
+use tokio_util::codec::Decoder;
 use varuint::{Deserializable as _, Serializable as _, Varint};
 
-use crate::utils::lang::ExtendMutAdapter;
+// === Encoder === //
+
+pub struct FrameEncoder {
+    header: BytesMut,
+    data: BytesMut,
+}
+
+impl fmt::Debug for FrameEncoder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.data.fmt(f)
+    }
+}
+
+impl Default for FrameEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FrameEncoder {
+    pub fn new() -> Self {
+        let mut data = BytesMut::new();
+        data.put_bytes(0u8, Varint(isize::MAX as u64).size_hint());
+        let header = data.split();
+
+        Self { header, data }
+    }
+
+    pub fn data(&self) -> &BytesMut {
+        &self.data
+    }
+
+    pub fn data_mut(&mut self) -> &mut BytesMut {
+        &mut self.data
+    }
+
+    pub fn finish(mut self) -> Bytes {
+        // Write header
+        let packet_len = Varint(self.data.len() as u64);
+        let header_len = packet_len.size_hint();
+        let header_start = self.header.len() - header_len;
+        let mut packet_len_buf = &mut self.header[header_start..];
+        packet_len.serialize(&mut packet_len_buf).unwrap();
+
+        // Recombine parts
+        self.header.unsplit(self.data);
+
+        // Produce final packet
+        self.header.advance(header_start);
+        self.header.freeze()
+    }
+}
+
+// === Decoder === //
 
 #[derive(Debug)]
 pub struct FrameDecoder {
@@ -41,34 +95,5 @@ impl Decoder for FrameDecoder {
         src.advance(header_len);
 
         Ok(Some(src.split_to(packet_len).freeze()))
-    }
-}
-
-#[derive(Debug)]
-pub struct FrameEncoder;
-
-impl<T: Serialize> Encoder<T> for FrameEncoder {
-    type Error = anyhow::Error;
-
-    fn encode(&mut self, item: T, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        // Reserve space for a maximally-large header.
-        // We can't go beyond `isize::MAX` since allocations are guaranteed to be below this size.
-        let max_header_len = Varint(isize::MAX as u64).size_hint();
-        dst.put_bytes(0u8, max_header_len);
-
-        // Encode the packet
-        let packet_start = dst.len();
-        postcard::to_extend(&item, ExtendMutAdapter(dst))?;
-
-        // Write the header.
-        let packet_len = Varint((dst.len() - packet_start) as u64);
-        let header_len = packet_len.size_hint();
-        let mut packet_len_buf = &mut dst[(packet_start - header_len)..packet_start];
-        packet_len.serialize(&mut packet_len_buf).unwrap();
-
-        // Truncate the unused header space.
-        dst.advance(max_header_len - header_len);
-
-        Ok(())
     }
 }

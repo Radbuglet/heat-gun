@@ -1,4 +1,4 @@
-use bytes::BytesMut;
+use bytes::BufMut;
 use hg_common::base::{
     collide::{bus::sys_flush_colliders, update::sys_update_colliders},
     debug::DebugDraw,
@@ -7,7 +7,6 @@ use hg_common::base::{
 };
 use hg_ecs::{bind, Entity, World};
 use macroquad::{math::Vec2, time::get_frame_time};
-use tokio_util::codec::Encoder as _;
 
 use crate::{
     base::{
@@ -80,10 +79,10 @@ pub fn world_update() {
         }
     }
 
-    let mut packet = BytesMut::new();
-    FrameEncoder.encode(&[0; 64][..], &mut packet).unwrap();
+    let mut packet = FrameEncoder::new();
+    packet.data_mut().put_bytes(0xAB, 1024);
     nm.transport
-        .send_reliable(packet.freeze(), ErasedTaskGuard::noop());
+        .send_reliable(packet.finish(), ErasedTaskGuard::noop());
 }
 
 pub fn world_render() {
