@@ -50,8 +50,9 @@ async fn main() -> anyhow::Result<()> {
         };
 
         match ev {
-            TransportEvent::Connected { peer } => {
+            TransportEvent::Connected { peer, task } => {
                 tracing::info!("Connected: {peer:?}");
+                drop(task);
             }
             TransportEvent::Disconnected { peer, cause } => {
                 tracing::info!("Disconnected: {peer:?}, {cause:?}");

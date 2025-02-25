@@ -46,6 +46,7 @@ impl fmt::Display for RawPeerId {
 pub enum TransportEvent {
     Connected {
         peer: RawPeerId,
+        task: ErasedTaskGuard,
     },
     Disconnected {
         peer: RawPeerId,
@@ -211,6 +212,8 @@ impl TransportListenWorker {
 
         tracing::info!("Listening on `{}`!", endpoint.local_addr().unwrap());
 
+        let mut listen_pressure = BackPressureAsync::new(64);
+
         while let Some(incoming) = endpoint.accept().await {
             let conn = incoming.accept()?.await?;
             let remote_addr = conn.remote_address();
@@ -219,6 +222,8 @@ impl TransportListenWorker {
                 .next_peer_id
                 .checked_add(1)
                 .context("created too many peers")?;
+
+            let accept_task = listen_pressure.start(1);
 
             let (send_action_tx, send_action_rx) = mpsc::unbounded_channel();
 
@@ -234,7 +239,9 @@ impl TransportListenWorker {
                 conn,
             };
 
-            tokio::spawn(peer_worker.run_conn(send_action_rx));
+            tokio::spawn(peer_worker.run_conn(ErasedTaskGuard::new(accept_task), send_action_rx));
+
+            listen_pressure.wait().await;
         }
 
         // (only reachable if `endpoint` is manually closed)
@@ -252,7 +259,11 @@ struct TransportPeerWorker {
 
 impl TransportPeerWorker {
     #[instrument(skip_all, name = "peer worker", fields(peer = %self.peer_state.peer_id))]
-    async fn run_conn(self, send_action_rx: mpsc::UnboundedReceiver<PeerSendAction>) {
+    async fn run_conn(
+        self,
+        accept_task: ErasedTaskGuard,
+        send_action_rx: mpsc::UnboundedReceiver<PeerSendAction>,
+    ) {
         tracing::info!("Got connection from {}", self.peer_state.remote_addr);
 
         // Add the peer to the peer map
@@ -263,35 +274,40 @@ impl TransportPeerWorker {
             .insert(self.peer_state.peer_id, self.peer_state.clone());
 
         // Handle connections
-        catch_termination_async(self.clone().run_conn_inner(send_action_rx), |cause| {
-            let cause = cause.unwrap_or_else(|| Err(worker_panic_error().into()));
+        catch_termination_async(
+            self.clone().run_conn_inner(accept_task, send_action_rx),
+            |cause| {
+                let cause = cause.unwrap_or_else(|| Err(worker_panic_error().into()));
 
-            match &cause {
-                Ok(()) => tracing::info!("Peer disconnected."),
-                Err(error) => tracing::error!("Socket handler crashed:\n{error:?}"),
-            }
+                match &cause {
+                    Ok(()) => tracing::info!("Peer disconnected."),
+                    Err(error) => tracing::error!("Socket handler crashed:\n{error:?}"),
+                }
 
-            self.listen_state
-                .peer_map
-                .lock()
-                .unwrap()
-                .remove(&self.peer_state.peer_id);
+                self.listen_state
+                    .peer_map
+                    .lock()
+                    .unwrap()
+                    .remove(&self.peer_state.peer_id);
 
-            self.listen_state.send_event(TransportEvent::Disconnected {
-                peer: self.peer_state.peer_id,
-                cause: cause.map_err(Into::into),
-            });
-        })
+                self.listen_state.send_event(TransportEvent::Disconnected {
+                    peer: self.peer_state.peer_id,
+                    cause: cause.map_err(Into::into),
+                });
+            },
+        )
         .await;
     }
 
     async fn run_conn_inner(
         self,
+        accept_task: ErasedTaskGuard,
         send_action_rx: mpsc::UnboundedReceiver<PeerSendAction>,
     ) -> MultiResult<()> {
         // Send connection event.
         self.listen_state.send_event(TransportEvent::Connected {
             peer: self.peer_state.peer_id,
+            task: accept_task,
         });
 
         // We ask the user to send the initial packet.
