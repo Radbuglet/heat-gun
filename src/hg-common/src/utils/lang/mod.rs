@@ -15,3 +15,9 @@ pub use field::*;
 
 mod futures;
 pub use futures::*;
+
+mod nameable_guard;
+pub use nameable_guard::*;
+
+mod steal;
+pub use steal::*;

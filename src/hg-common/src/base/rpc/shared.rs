@@ -1,8 +1,12 @@
 use std::{any::TypeId, fmt, num::NonZeroU64};
 
+use anyhow::Context;
+use bytes::BytesMut;
 use derive_where::derive_where;
-use hg_ecs::{component, Entity, Index};
+use hg_ecs::{component, Entity};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
+use crate::utils::lang::ExtendMutAdapter;
 
 // === Newtypes === //
 
@@ -10,6 +14,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub struct RpcPeer(pub Entity);
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct RpcNodeId(pub NonZeroU64);
 
 // === RpcPacket === //
@@ -17,11 +22,22 @@ pub struct RpcNodeId(pub NonZeroU64);
 pub trait RpcPacket:
     'static + Sized + Send + Sync + Clone + fmt::Debug + Serialize + DeserializeOwned
 {
+    fn decode(data: &[u8]) -> anyhow::Result<Self>;
+
+    fn encode(&self, out: &mut BytesMut);
 }
 
-impl<T> RpcPacket for T where
-    T: 'static + Sized + Send + Sync + Clone + fmt::Debug + Serialize + DeserializeOwned
+impl<T> RpcPacket for T
+where
+    T: 'static + Sized + Send + Sync + Clone + fmt::Debug + Serialize + DeserializeOwned,
 {
+    fn decode(data: &[u8]) -> anyhow::Result<Self> {
+        postcard::from_bytes(data).context("failed to deserialize packet")
+    }
+
+    fn encode(&self, out: &mut BytesMut) {
+        postcard::to_extend(self, ExtendMutAdapter(out)).unwrap();
+    }
 }
 
 // === RpcKind === //
@@ -64,18 +80,29 @@ impl RpcKindId {
 #[derive(Debug)]
 pub struct RpcNode {
     pub(crate) kind: RpcKindId,
-    pub(crate) id: RpcNodeId,
-    pub(crate) managed_state: Index,
+    pub(crate) id: Option<RpcNodeId>,
 }
 
 component!(RpcNode);
 
 impl RpcNode {
+    pub fn new<K: RpcKind>() -> Self {
+        Self::new_raw(RpcKindId::of::<K>())
+    }
+
+    pub fn new_raw(kind: RpcKindId) -> Self {
+        Self { kind, id: None }
+    }
+
     pub fn kind(&self) -> RpcKindId {
         self.kind
     }
 
-    pub fn id(&self) -> RpcNodeId {
+    pub fn opt_id(&self) -> Option<RpcNodeId> {
         self.id
+    }
+
+    pub fn expect_id(&self) -> RpcNodeId {
+        self.id.unwrap()
     }
 }
