@@ -27,6 +27,12 @@ impl<T: fmt::Debug> fmt::Debug for Steal<T> {
     }
 }
 
+impl<T: Default> Default for Steal<T> {
+    fn default() -> Self {
+        Self::Present(T::default())
+    }
+}
+
 impl<T: Clone> Clone for Steal<T> {
     fn clone(&self) -> Self {
         Present((&**self).clone())

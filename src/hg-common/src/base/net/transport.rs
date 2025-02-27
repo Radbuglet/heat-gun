@@ -1,4 +1,4 @@
-use std::{io, pin::pin};
+use std::{fmt, io, num::NonZeroU64, pin::pin};
 
 use anyhow::Context as _;
 use futures::FutureExt as _;
@@ -7,6 +7,15 @@ use tokio::task;
 use crate::utils::lang::{flatten_tokio_join_result, FusedFuture, MultiError};
 
 use super::protocol::SocketCloseReason;
+
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct PeerId(pub NonZeroU64);
+
+impl fmt::Display for PeerId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 pub async fn run_transport_data_handler(
     conn: quinn::Connection,

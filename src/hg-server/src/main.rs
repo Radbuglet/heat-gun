@@ -1,3 +1,4 @@
+#![feature(arbitrary_self_types)]
 #![feature(context_injection)]
 
 use std::{net::SocketAddr, str::FromStr, sync::Arc, time::Duration};

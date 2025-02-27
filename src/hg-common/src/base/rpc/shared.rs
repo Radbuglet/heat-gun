@@ -3,21 +3,16 @@ use std::{any::TypeId, fmt, num::NonZeroU64};
 use anyhow::Context;
 use bytes::BytesMut;
 use derive_where::derive_where;
-use hg_ecs::{component, Entity};
+use hg_ecs::component;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::utils::lang::ExtendMutAdapter;
 
-// === Newtypes === //
-
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
-pub struct RpcPeer(pub Entity);
+// === Protocol === //
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct RpcNodeId(pub NonZeroU64);
-
-// === RpcPacket === //
 
 pub trait RpcPacket:
     'static + Sized + Send + Sync + Clone + fmt::Debug + Serialize + DeserializeOwned
@@ -38,6 +33,13 @@ where
     fn encode(&self, out: &mut BytesMut) {
         postcard::to_extend(self, ExtendMutAdapter(out)).unwrap();
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RpcCbHeader {
+    SendMessage(RpcNodeId),
+    CreateNode(RpcNodeId),
+    DeleteNode(RpcNodeId),
 }
 
 // === RpcKind === //

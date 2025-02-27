@@ -1,16 +1,19 @@
 use std::{
     cell::Cell,
-    context::{infer_bundle, pack, Bundle},
     fmt,
     time::{Duration, Instant},
 };
 
 use glam::Vec2;
-use hg_ecs::{component, Obj, World, WORLD};
+use hg_ecs::{component, Obj, World};
 
-use crate::utils::math::{Aabb, RgbaColor, Segment};
-
-const REENTRANCY_MSG: &str = "cannot reentrantly call `DebugDraw` methods while rendering";
+use crate::{
+    field,
+    utils::{
+        lang::{steal_from_ecs, Steal},
+        math::{Aabb, RgbaColor, Segment},
+    },
+};
 
 // === DebugDraw === //
 
@@ -19,7 +22,7 @@ pub type ErasedBackend = Box<dyn DebugDrawBackend>;
 
 pub struct DebugDraw {
     backend: ErasedBackend,
-    inner: Option<DebugDrawInner>,
+    inner: Steal<DebugDrawInner>,
 }
 
 #[derive(Default)]
@@ -41,7 +44,7 @@ impl DebugDraw {
     pub fn new(backend: ErasedBackend) -> Self {
         Self {
             backend,
-            inner: Some(DebugDrawInner::default()),
+            inner: Steal::Present(DebugDrawInner::default()),
         }
     }
 
@@ -61,37 +64,24 @@ impl DebugDraw {
         self.bind(DebugClearMode::Timed(Instant::now() + time))
     }
 
-    fn inner_mut(&mut self) -> &mut DebugDrawInner {
-        self.inner.as_mut().expect(REENTRANCY_MSG)
-    }
-
     pub fn clear_keyed(mut self: Obj<Self>) {
-        self.inner_mut().keyed.clear();
+        self.inner.keyed.clear();
     }
 
-    pub fn render(mut self: Obj<Self>) {
+    pub fn render(self: Obj<Self>) {
         let now = Instant::now();
 
         // Swap `me` with a dummy `DebugContext` so we can mutate ourself without needing to borrow
         // the `DebugContext` component. This is swapped back
-        let taken = self.inner.take().expect(REENTRANCY_MSG);
-        let cx = pack!(@env => Bundle<infer_bundle!('_)>);
-        let mut guard = scopeguard::guard((cx, taken), |(cx, taken)| {
-            let static ..cx;
-            self.inner = Some(taken);
-        });
-
-        let (cx, me) = &mut *guard;
-        let static ..*cx;
+        let mut guard = steal_from_ecs(self, field!(Self, inner));
+        let (world, inner) = &mut *guard;
 
         // Do the actual drawing!
-        for mut target in me.ephemeral.drain(..) {
-            target(&mut WORLD);
+        for mut target in inner.ephemeral.drain(..) {
+            target(world);
         }
 
-        let world = &mut WORLD;
-
-        me.timed.retain_mut(|(expires_at, target)| {
+        inner.timed.retain_mut(|(expires_at, target)| {
             if now > *expires_at {
                 return false;
             }
@@ -100,8 +90,8 @@ impl DebugDraw {
             true
         });
 
-        for target in &mut me.keyed {
-            target(&mut WORLD);
+        for target in &mut inner.keyed {
+            target(world);
         }
     }
 }
@@ -126,9 +116,9 @@ impl DebugDrawBound {
         let mut ctx = self.ctx;
 
         match self.mode {
-            DebugClearMode::NextFrame => ctx.inner_mut().ephemeral.push(renderer),
-            DebugClearMode::Timed(instant) => ctx.inner_mut().timed.push((instant, renderer)),
-            DebugClearMode::UntilKey => ctx.inner_mut().keyed.push(renderer),
+            DebugClearMode::NextFrame => ctx.inner.ephemeral.push(renderer),
+            DebugClearMode::Timed(instant) => ctx.inner.timed.push((instant, renderer)),
+            DebugClearMode::UntilKey => ctx.inner.keyed.push(renderer),
         }
     }
 

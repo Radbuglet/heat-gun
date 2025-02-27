@@ -1,5 +1,4 @@
 use std::{
-    fmt,
     net::SocketAddr,
     num::NonZeroU64,
     pin::pin,
@@ -14,7 +13,7 @@ use hg_common::{
         back_pressure::{BackPressureAsync, ErasedTaskGuard},
         codec::FrameDecoder,
         protocol::SocketCloseReason,
-        transport::filter_framed_read_failure,
+        transport::{filter_framed_read_failure, PeerId},
     },
     utils::lang::{
         absorb_result_std, catch_termination_async, flatten_tokio_join_result, worker_panic_error,
@@ -33,27 +32,18 @@ use tracing::{instrument, Instrument};
 #[error("peer disconnected")]
 pub struct PeerDisconnectError;
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct RawPeerId(NonZeroU64);
-
-impl fmt::Display for RawPeerId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
 #[derive(Debug)]
 pub enum TransportEvent {
     Connected {
-        peer: RawPeerId,
+        peer: PeerId,
         task: ErasedTaskGuard,
     },
     Disconnected {
-        peer: RawPeerId,
+        peer: PeerId,
         cause: anyhow::Result<()>,
     },
     DataReceived {
-        peer: RawPeerId,
+        peer: PeerId,
         packet: Bytes,
         task: ErasedTaskGuard,
     },
@@ -82,12 +72,12 @@ pub struct Transport {
 #[derive(Debug)]
 struct TransportListenState {
     event_tx: mpsc::UnboundedSender<TransportEvent>,
-    peer_map: Mutex<FxHashMap<RawPeerId, Arc<TransportPeerState>>>,
+    peer_map: Mutex<FxHashMap<PeerId, Arc<TransportPeerState>>>,
 }
 
 #[derive(Debug)]
 struct TransportPeerState {
-    peer_id: RawPeerId,
+    peer_id: PeerId,
     remote_addr: SocketAddr,
     send_action_tx: mpsc::UnboundedSender<PeerSendAction>,
 }
@@ -114,7 +104,7 @@ impl Transport {
         }
     }
 
-    fn peer(&self, id: RawPeerId) -> Result<Arc<TransportPeerState>, PeerDisconnectError> {
+    fn peer(&self, id: PeerId) -> Result<Arc<TransportPeerState>, PeerDisconnectError> {
         self.listen_state
             .peer_map
             .lock()
@@ -124,11 +114,11 @@ impl Transport {
             .ok_or(PeerDisconnectError)
     }
 
-    pub fn peer_remote_addr(&self, id: RawPeerId) -> Result<SocketAddr, PeerDisconnectError> {
+    pub fn peer_remote_addr(&self, id: PeerId) -> Result<SocketAddr, PeerDisconnectError> {
         self.peer(id).map(|peer| peer.remote_addr)
     }
 
-    pub fn peer_send(&self, id: RawPeerId, action: PeerSendAction) {
+    pub fn peer_send(&self, id: PeerId, action: PeerSendAction) {
         absorb_result_std::<_, PeerDisconnectError>("send a packet", || {
             self.peer(id)?
                 .send_action_tx
@@ -139,12 +129,7 @@ impl Transport {
         });
     }
 
-    pub fn peer_send_reliable(
-        &self,
-        id: RawPeerId,
-        pre_framed: Bytes,
-        task_guard: ErasedTaskGuard,
-    ) {
+    pub fn peer_send_reliable(&self, id: PeerId, pre_framed: Bytes, task_guard: ErasedTaskGuard) {
         self.peer_send(
             id,
             PeerSendAction::Reliable {
@@ -154,7 +139,7 @@ impl Transport {
         );
     }
 
-    pub fn peer_disconnect(&self, id: RawPeerId, data: Bytes) {
+    pub fn peer_disconnect(&self, id: PeerId, data: Bytes) {
         self.peer_send(id, PeerSendAction::Disconnect(data));
     }
 
@@ -217,7 +202,7 @@ impl TransportListenWorker {
         while let Some(incoming) = endpoint.accept().await {
             let conn = incoming.accept()?.await?;
             let remote_addr = conn.remote_address();
-            let peer_id = RawPeerId(self.next_peer_id);
+            let peer_id = PeerId(self.next_peer_id);
             self.next_peer_id = self
                 .next_peer_id
                 .checked_add(1)
