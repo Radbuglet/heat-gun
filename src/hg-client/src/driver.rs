@@ -62,7 +62,7 @@ pub fn world_update() {
     sys_update_virtual_cameras();
     sys_update_debug();
 
-    let mut nm = Entity::root().get::<NetManager>();
+    let mut nm = Entity::service::<NetManager>();
 
     while let Some(ev) = nm.transport.process_non_blocking() {
         match ev {

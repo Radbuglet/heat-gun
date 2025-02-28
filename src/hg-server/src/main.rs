@@ -1,16 +1,20 @@
 #![feature(arbitrary_self_types)]
 #![feature(context_injection)]
 
-use std::{net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, str::FromStr, sync::Arc};
 
 use anyhow::Context;
-use base::net::{Transport, TransportEvent};
+use base::net::Transport;
+use driver::{world_init, world_main_loop};
 use hg_common::base::net::dev_cert::generate_dev_priv_key;
+use hg_ecs::World;
 use quinn::crypto::rustls::QuicServerConfig;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
 pub mod base;
+pub mod driver;
+pub mod game;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -43,31 +47,12 @@ async fn main() -> anyhow::Result<()> {
     // Setup server
     let bind_addr = SocketAddr::from_str("127.0.0.1:8080").unwrap();
     let config = quinn::ServerConfig::with_crypto(crypto);
-    let mut transport = Transport::new(config, bind_addr);
+    let transport = Transport::new(config, bind_addr);
 
-    loop {
-        let Some(ev) = transport.process_async().await else {
-            continue;
-        };
+    // Create world
+    let mut world = World::new();
+    world_init(&mut world, transport);
+    world_main_loop(&mut world);
 
-        match ev {
-            TransportEvent::Connected { peer, task } => {
-                tracing::info!("Connected: {peer:?}");
-                drop(task);
-            }
-            TransportEvent::Disconnected { peer, cause } => {
-                tracing::info!("Disconnected: {peer:?}, {cause:?}");
-            }
-            TransportEvent::DataReceived { peer, packet, task } => {
-                tracing::info!("Packet received: {peer:?}, {packet:?}");
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(1000)).await;
-                    drop(task);
-                });
-            }
-            TransportEvent::Shutdown { cause } => {
-                tracing::error!("shutdown: {cause:?}");
-            }
-        }
-    }
+    Ok(())
 }

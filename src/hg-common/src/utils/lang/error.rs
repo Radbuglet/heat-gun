@@ -43,7 +43,7 @@ pub fn absorb_result_std<T, E: Error>(op: &str, f: impl FnOnce() -> Result<T, E>
     match f() {
         Ok(v) => Some(v),
         Err(err) => {
-            tracing::debug!("failed to {op}: {err}");
+            tracing::debug!("failed to {op}: {err:?}");
             None
         }
     }

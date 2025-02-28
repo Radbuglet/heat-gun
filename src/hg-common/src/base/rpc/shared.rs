@@ -1,12 +1,10 @@
-use std::{any::TypeId, fmt, num::NonZeroU64};
+use std::{any::TypeId, num::NonZeroU64};
 
-use anyhow::Context;
-use bytes::BytesMut;
 use derive_where::derive_where;
 use hg_ecs::component;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
-use crate::utils::lang::ExtendMutAdapter;
+use crate::base::net::serialize::RpcPacket;
 
 // === Protocol === //
 
@@ -14,25 +12,9 @@ use crate::utils::lang::ExtendMutAdapter;
 #[serde(transparent)]
 pub struct RpcNodeId(pub NonZeroU64);
 
-pub trait RpcPacket:
-    'static + Sized + Send + Sync + Clone + fmt::Debug + Serialize + DeserializeOwned
-{
-    fn decode(data: &[u8]) -> anyhow::Result<Self>;
-
-    fn encode(&self, out: &mut BytesMut);
-}
-
-impl<T> RpcPacket for T
-where
-    T: 'static + Sized + Send + Sync + Clone + fmt::Debug + Serialize + DeserializeOwned,
-{
-    fn decode(data: &[u8]) -> anyhow::Result<Self> {
-        postcard::from_bytes(data).context("failed to deserialize packet")
-    }
-
-    fn encode(&self, out: &mut BytesMut) {
-        postcard::to_extend(self, ExtendMutAdapter(out)).unwrap();
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RpcSbHeader {
+    SendMessage(RpcNodeId),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

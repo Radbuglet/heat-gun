@@ -208,6 +208,10 @@ impl Entity {
         EntityStore::fetch().root
     }
 
+    pub fn service<T: Component>(cx: Bundle<&AccessComp<T>>) -> Obj<T> {
+        Self::root().get(pack!(cx))
+    }
+
     pub fn is_alive(self) -> bool {
         EntityStore::fetch().entities.contains(self.0)
     }
@@ -301,12 +305,12 @@ impl Entity {
         self
     }
 
-    pub fn with_many<T: BundleItemSet>(
+    pub fn with_proc<T: BundleItemSet>(
         self,
-        gen: impl FnOnce(Entity, Bundle<T>),
+        attach: impl FnOnce(Entity, Bundle<T>),
         cx: Bundle<T>,
     ) -> Self {
-        gen(self, cx);
+        attach(self, cx);
         self
     }
 

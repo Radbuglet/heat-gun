@@ -5,17 +5,22 @@ use std::{
     num::NonZeroU64,
 };
 
+use anyhow::Context;
 use bytes::Bytes;
-use hg_ecs::{bind, component, entity::Component, AccessComp, Index, Obj, World};
+use hg_ecs::{bind, component, entity::Component, AccessComp, Index, Obj, World, WORLD};
 use hg_utils::hash::{hash_map, FxHashMap, FxHashSet};
 
 use crate::{
-    base::net::{codec::FrameEncoder, serialize::MultiPartSerializeExt as _, transport::PeerId},
+    base::net::{
+        codec::FrameEncoder,
+        serialize::{MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket as _},
+        transport::PeerId,
+    },
     field,
     utils::lang::{steal_from_ecs, Steal},
 };
 
-use super::{RpcCbHeader, RpcKind, RpcKindId, RpcNode, RpcNodeId, RpcPacket as _};
+use super::{RpcCbHeader, RpcKind, RpcKindId, RpcNode, RpcNodeId, RpcSbHeader};
 
 // === RpcKind === //
 
@@ -44,7 +49,8 @@ pub trait RpcKindServer: Sized + 'static {
 type KindVtableRef = &'static KindVtable;
 
 struct KindVtable {
-    drain_on_flush: fn(&mut World, &mut KindData),
+    process_packet: fn(&mut World, Obj<RpcNodeServer>, PeerId, Bytes) -> anyhow::Result<()>,
+    drain_replications: fn(&mut World, &mut KindData),
 }
 
 impl fmt::Debug for KindVtable {
@@ -59,37 +65,24 @@ trait HasKindVtable {
 
 impl<K: RpcKindServer> HasKindVtable for K {
     const VTABLE: KindVtableRef = &KindVtable {
-        drain_on_flush: |world, kind_data| {
-            // Process received packets
-            // TODO: Should this be allowed to reentrantly send new packets?
-            for (target, sender, packet) in kind_data.packet_recv_queue.drain(..) {
-                // Deserialize the packet
-                let Ok(packet) = ServerSb::<K>::decode(&packet) else {
-                    // TODO: Better error handling
-                    tracing::warn!("failed to decode packet");
-                    continue;
-                };
+        process_packet: |world, target, peer, packet| {
+            // Deserialize the packet
+            let packet = ServerSb::<K>::decode(&packet)?;
 
-                // Fetch the RPC node userdata
-                let userdata = {
-                    bind!(world, let cx: _);
-                    target.userdata::<K>(cx)
-                };
+            // Fetch the RPC node userdata
+            let userdata = {
+                bind!(world, let cx: _);
+                target.userdata::<K>(cx)
+            };
 
-                // Process the packet
-                let res = {
-                    let mut reborrow = world.reborrow();
-                    let cx = reborrow.bundle();
-                    K::process(cx, userdata, sender, packet)
-                };
+            // Process the packet
+            let mut reborrow = world.reborrow();
+            let cx = reborrow.bundle();
+            K::process(cx, userdata, peer, packet)?;
 
-                if res.is_err() {
-                    // TODO: Better error handling
-                    tracing::error!("failed to process packet: {res:?}");
-                    continue;
-                }
-            }
-
+            Ok(())
+        },
+        drain_replications: |world, kind_data| {
             // Process replications
             for (target, peer) in kind_data.now_visible.drain() {
                 // Fetch the RPC node userdata
@@ -109,13 +102,13 @@ impl<K: RpcKindServer> HasKindVtable for K {
                 // Serialize the catchup structure
                 let mut encoder = FrameEncoder::new();
 
-                encoder.data_mut().encode_multi_part(|packet| {
+                encoder.data_mut().encode_multi_part_raw(|packet| {
                     res.encode(packet);
                 });
 
-                encoder
-                    .data_mut()
-                    .encode_multi_part(|packet| RpcCbHeader::CreateNode(target_id).encode(packet));
+                encoder.data_mut().encode_multi_part_raw(|packet| {
+                    RpcCbHeader::CreateNode(target_id).encode(packet)
+                });
 
                 kind_data.packet_replicate_queue.push((peer, encoder));
             }
@@ -128,7 +121,7 @@ impl<K: RpcKindServer> HasKindVtable for K {
                     let mut encoder = FrameEncoder::new();
                     let target_id = target.node_id;
 
-                    encoder.data_mut().encode_multi_part(|packet| {
+                    encoder.data_mut().encode_multi_part_raw(|packet| {
                         RpcCbHeader::DeleteNode(target_id).encode(packet)
                     });
 
@@ -157,10 +150,6 @@ pub struct RpcServer {
 #[derive(Debug)]
 struct KindData {
     vtable: &'static KindVtable,
-
-    /// Queues packets received from some unspecified transport. The RPC multi-part packet has been
-    /// parsed and stripped, leaving just the raw message packet in its place.
-    packet_recv_queue: Vec<(Obj<RpcNodeServer>, PeerId, Bytes)>,
 
     /// Fully-framed packets produced by explicit calls to `send_packet`.
     packet_send_queue: Vec<(Obj<RpcNodeServer>, FrameEncoder)>,
@@ -207,7 +196,6 @@ impl RpcServer {
 
         entry.insert(KindData {
             vtable: <K as HasKindVtable>::VTABLE,
-            packet_recv_queue: Vec::new(),
             packet_send_queue: Vec::new(),
             now_visible: FxHashSet::default(),
             now_invisible: FxHashSet::default(),
@@ -222,11 +210,12 @@ impl RpcServer {
         assert_eq!(node.opt_id(), None);
 
         // Ensure that the node has a valid kind
-        assert!(
-            self.kinds.contains_key(&node.kind()),
-            "RPC node with kind {:?} was never registered",
-            node.kind.id()
-        );
+        let kind = node.kind();
+        let vtable = self
+            .kinds
+            .get(&kind)
+            .unwrap_or_else(|| panic!("RPC node with kind {:?} was never registered", kind.id()))
+            .vtable;
 
         // Generate a unique node ID
         let next_id = self
@@ -241,6 +230,7 @@ impl RpcServer {
         // Extend the node with server-specific state
         let server_node = node.entity().add(RpcNodeServer {
             kind: node.kind(),
+            vtable,
             node_id,
             userdata: Index::DANGLING,
             server: self,
@@ -288,11 +278,11 @@ impl RpcServer {
 
         let mut encoder = FrameEncoder::new();
 
-        encoder.data_mut().encode_multi_part(|out| {
+        encoder.data_mut().encode_multi_part_raw(|out| {
             packet.encode(out);
         });
 
-        encoder.data_mut().encode_multi_part(|packet| {
+        encoder.data_mut().encode_multi_part_raw(|packet| {
             RpcCbHeader::SendMessage(target_id).encode(packet);
         });
 
@@ -303,22 +293,28 @@ impl RpcServer {
             .push((target, encoder));
     }
 
-    pub fn recv_packet(mut self: Obj<Self>, target_id: RpcNodeId, sender: PeerId, data: Bytes) {
+    pub fn recv_packet(self: Obj<Self>, sender: PeerId, packet: Bytes) -> anyhow::Result<()> {
+        let mut packet = MultiPartDecoder::new(packet);
+
+        let header = packet
+            .expect_rich::<RpcSbHeader>()
+            .context("failed to parse RPC header")?;
+
+        let RpcSbHeader::SendMessage(target_id) = header;
+
+        let data = packet.expect().context("failed to parse RPC data")?;
+
         let Some(target) = self.lookup_node(target_id) else {
             tracing::warn!("node with ID {target_id:?} does not exist");
-            return;
+            return Ok(());
         };
 
         if !target.is_visible_to(sender) {
             tracing::warn!("{target_id:?} is not visible to {sender:?}");
-            return;
+            return Ok(());
         }
 
-        self.kinds
-            .get_mut(&target.kind)
-            .unwrap()
-            .packet_recv_queue
-            .push((target, sender, data));
+        (target.vtable.process_packet)(&mut WORLD, target, sender, data)
     }
 
     pub fn flush(self: Obj<Self>, trans: &mut impl RpcServerFlushTransport) {
@@ -327,7 +323,7 @@ impl RpcServer {
 
         for kind in kinds.values_mut() {
             // Process incoming packets and (de)replication requests.
-            (kind.vtable.drain_on_flush)(world, kind);
+            (kind.vtable.drain_replications)(world, kind);
 
             // Send out packets
             for (peer, packet) in kind.packet_replicate_queue.drain(..) {
@@ -361,6 +357,7 @@ pub trait RpcServerFlushTransport {
 #[derive(Debug)]
 pub struct RpcNodeServer {
     kind: RpcKindId,
+    vtable: KindVtableRef,
     node_id: RpcNodeId,
     userdata: Index,
     server: Obj<RpcServer>,

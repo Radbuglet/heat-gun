@@ -2,7 +2,10 @@ use std::{
     net::SocketAddr,
     num::NonZeroU64,
     pin::pin,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering::*},
+        Arc, Mutex,
+    },
 };
 
 use anyhow::Context as _;
@@ -16,8 +19,8 @@ use hg_common::{
         transport::{filter_framed_read_failure, PeerId},
     },
     utils::lang::{
-        absorb_result_std, catch_termination_async, flatten_tokio_join_result, worker_panic_error,
-        FusedFuture, MultiError, MultiResult,
+        absorb_result_anyhow, absorb_result_std, catch_termination_async,
+        flatten_tokio_join_result, worker_panic_error, FusedFuture, MultiError, MultiResult,
     },
 };
 use hg_utils::hash::FxHashMap;
@@ -53,7 +56,7 @@ pub enum TransportEvent {
 }
 
 #[derive(Debug)]
-pub enum PeerSendAction {
+enum PeerSendAction {
     Reliable {
         pre_framed: Bytes,
         task_guard: ErasedTaskGuard,
@@ -65,8 +68,8 @@ pub enum PeerSendAction {
 
 #[derive(Debug)]
 pub struct Transport {
+    write_handle: TransportWriteHandle,
     event_rx: mpsc::UnboundedReceiver<TransportEvent>,
-    listen_state: Arc<TransportListenState>,
 }
 
 #[derive(Debug)]
@@ -80,6 +83,7 @@ struct TransportPeerState {
     peer_id: PeerId,
     remote_addr: SocketAddr,
     send_action_tx: mpsc::UnboundedSender<PeerSendAction>,
+    kicked: AtomicBool,
 }
 
 impl Transport {
@@ -99,11 +103,49 @@ impl Transport {
         tokio::spawn(listen_worker.run_listen(config, bind_addr));
 
         Self {
+            write_handle: TransportWriteHandle { listen_state },
             event_rx,
-            listen_state,
         }
     }
 
+    pub fn process(&mut self) -> Option<TransportEvent> {
+        while let Some(ev) = self.event_rx.try_recv().ok() {
+            if matches!(
+                ev,
+                TransportEvent::DataReceived { peer, .. }
+                    if !self.write_handle_ref().peer_alive(peer),
+            ) {
+                // (drop incoming packet from kicked peer)
+                continue;
+            }
+
+            return Some(ev);
+        }
+
+        None
+    }
+
+    pub fn write_handle_ref(&self) -> &TransportWriteHandle {
+        &self.write_handle
+    }
+
+    pub fn write_handle(&self) -> TransportWriteHandle {
+        self.write_handle.clone()
+    }
+}
+
+impl TransportListenState {
+    fn send_event(&self, event: TransportEvent) {
+        let _ = self.event_tx.send(event);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TransportWriteHandle {
+    listen_state: Arc<TransportListenState>,
+}
+
+impl TransportWriteHandle {
     fn peer(&self, id: PeerId) -> Result<Arc<TransportPeerState>, PeerDisconnectError> {
         self.listen_state
             .peer_map
@@ -111,6 +153,7 @@ impl Transport {
             .unwrap()
             .get(&id)
             .cloned()
+            .filter(|v| !v.kicked.load(Relaxed))
             .ok_or(PeerDisconnectError)
     }
 
@@ -118,47 +161,40 @@ impl Transport {
         self.peer(id).map(|peer| peer.remote_addr)
     }
 
-    pub fn peer_send(&self, id: PeerId, action: PeerSendAction) {
+    pub fn peer_alive(&self, id: PeerId) -> bool {
+        self.peer(id).is_ok()
+    }
+
+    pub fn peer_send(&self, id: PeerId, pre_framed: Bytes, task_guard: ErasedTaskGuard) {
         absorb_result_std::<_, PeerDisconnectError>("send a packet", || {
             self.peer(id)?
                 .send_action_tx
-                .send(action)
+                .send(PeerSendAction::Reliable {
+                    pre_framed,
+                    task_guard,
+                })
                 .map_err(|_| PeerDisconnectError)?;
 
             Ok(())
         });
     }
 
-    pub fn peer_send_reliable(&self, id: PeerId, pre_framed: Bytes, task_guard: ErasedTaskGuard) {
-        self.peer_send(
-            id,
-            PeerSendAction::Reliable {
-                pre_framed,
-                task_guard,
-            },
-        );
-    }
+    pub fn peer_kick(&self, id: PeerId, data: Bytes) {
+        absorb_result_anyhow("kick a peer", || {
+            let peer = self.peer(id)?;
 
-    pub fn peer_disconnect(&self, id: PeerId, data: Bytes) {
-        self.peer_send(id, PeerSendAction::Disconnect(data));
-    }
+            if peer.kicked.swap(true, Relaxed) {
+                anyhow::bail!("cannot kick a peer more than once");
+            }
 
-    pub fn process_non_blocking(&mut self) -> Option<TransportEvent> {
-        self.event_rx.try_recv().ok()
-    }
+            tracing::info!("Kicked peer {id}");
 
-    pub fn process_blocking(&mut self) -> Option<TransportEvent> {
-        self.event_rx.blocking_recv()
-    }
+            peer.send_action_tx
+                .send(PeerSendAction::Disconnect(data))
+                .map_err(|_| PeerDisconnectError)?;
 
-    pub async fn process_async(&mut self) -> Option<TransportEvent> {
-        self.event_rx.recv().await
-    }
-}
-
-impl TransportListenState {
-    fn send_event(&self, event: TransportEvent) {
-        let _ = self.event_tx.send(event);
+            Ok(())
+        });
     }
 }
 
@@ -216,6 +252,7 @@ impl TransportListenWorker {
                 peer_id,
                 remote_addr,
                 send_action_tx,
+                kicked: AtomicBool::new(false),
             });
 
             let peer_worker = TransportPeerWorker {
