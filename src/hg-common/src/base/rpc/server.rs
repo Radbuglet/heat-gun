@@ -103,13 +103,11 @@ impl<K: RpcKindServer> HasKindVtable for K {
                 // Serialize the catchup structure
                 let mut encoder = FrameEncoder::new();
 
-                encoder.data_mut().encode_multi_part(&catchup);
-                encoder
-                    .data_mut()
-                    .encode_multi_part(&RpcCbHeader::CreateNode(
-                        target_id,
-                        Cow::Borrowed(<K::Kind as RpcKind>::ID),
-                    ));
+                encoder.encode_multi_part(&catchup);
+                encoder.encode_multi_part(&RpcCbHeader::CreateNode(
+                    target_id,
+                    Cow::Borrowed(<K::Kind as RpcKind>::ID),
+                ));
 
                 kind_data.packet_replicate_queue.push((peer, encoder));
             }
@@ -122,9 +120,7 @@ impl<K: RpcKindServer> HasKindVtable for K {
                     let mut encoder = FrameEncoder::new();
                     let target_id = target.node_id;
 
-                    encoder
-                        .data_mut()
-                        .encode_multi_part(&RpcCbHeader::DeleteNode(target_id));
+                    encoder.encode_multi_part(&RpcCbHeader::DeleteNode(target_id));
 
                     kind_data.packet_de_replicate_queue.push((peer, encoder));
                 }
@@ -270,10 +266,8 @@ impl RpcServer {
         assert_eq!(target.kind, RpcKindId::of::<K>());
 
         let mut encoder = FrameEncoder::new();
-        encoder.data_mut().encode_multi_part(&packet);
-        encoder
-            .data_mut()
-            .encode_multi_part(&RpcCbHeader::SendMessage(target.node_id));
+        encoder.encode_multi_part(&packet);
+        encoder.encode_multi_part(&RpcCbHeader::SendMessage(target.node_id));
 
         self.kinds
             .get_mut(&target.kind)

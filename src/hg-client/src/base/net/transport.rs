@@ -37,9 +37,9 @@ pub enum TransportEvent {
 }
 
 #[derive(Debug)]
-pub enum PeerSendAction {
+enum PeerSendAction {
     Reliable {
-        pre_framed: Bytes,
+        framed: Bytes,
         task_guard: ErasedTaskGuard,
     },
     Disconnect(Bytes),
@@ -80,12 +80,11 @@ impl Transport {
         Self { state, event_rx }
     }
 
-    pub fn send(&self, pre_framed: Bytes, task_guard: ErasedTaskGuard) {
+    pub fn send(&self, framed: Bytes, task_guard: ErasedTaskGuard) {
         absorb_result_std::<_, _>("send a packet", || {
-            self.state.send_action_tx.send(PeerSendAction::Reliable {
-                pre_framed,
-                task_guard,
-            })
+            self.state
+                .send_action_tx
+                .send(PeerSendAction::Reliable { framed, task_guard })
         });
     }
 
@@ -239,7 +238,7 @@ impl TransportWorker {
             // Process it!
             match send_action {
                 PeerSendAction::Reliable {
-                    pre_framed: data,
+                    framed: data,
                     task_guard,
                 } => {
                     // TODO: parse error

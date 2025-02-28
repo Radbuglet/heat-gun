@@ -62,7 +62,7 @@ pub fn spawn_player(parent: Entity) -> Entity {
             name: "player_mc_playerface".to_string(),
         });
 
-    Entity::service::<NetManager>().rpc().register(player.get());
+    Entity::service::<NetManager>().register(player.get());
 
     player
 }

@@ -4,7 +4,7 @@ use anyhow::Context;
 use bytes::Bytes;
 use hg_common::base::{
     net::{back_pressure::ErasedTaskGuard, codec::FrameEncoder, dev_cert::fetch_dev_pub_cert},
-    rpc::{RpcClient, RpcKindClient},
+    rpc::{RpcClient, RpcKind, RpcKindClient, RpcNodeClient},
 };
 use hg_ecs::{component, Entity, Obj};
 use quinn::crypto::rustls::QuicClientConfig;
@@ -43,8 +43,14 @@ impl NetManager {
         Ok(mgr)
     }
 
-    pub fn define_rpc<K: RpcKindClient>(mut self: Obj<Self>) {
+    pub fn define<K: RpcKindClient>(mut self: Obj<Self>) {
         self.rpc.define::<K>();
+    }
+
+    pub fn send<K: RpcKind>(self: Obj<Self>, target: Obj<RpcNodeClient>, data: K::ServerBound) {
+        let packet = self.rpc.send_packet::<K>(target, data);
+        self.transport
+            .send(packet.finish(), ErasedTaskGuard::noop());
     }
 
     pub fn process(mut self: Obj<Self>) {
@@ -53,12 +59,9 @@ impl NetManager {
                 TransportEvent::Connected => {
                     // Send login packet
                     let mut encoder = FrameEncoder::new();
-                    encoder
-                        .data_mut()
-                        .extend_from_slice(b"I want to log in, please!");
-
-                    let data = encoder.finish();
-                    self.transport.send(data, ErasedTaskGuard::noop());
+                    encoder.extend_from_slice(b"I want to log in, please!");
+                    self.transport
+                        .send(encoder.finish(), ErasedTaskGuard::noop());
                 }
                 TransportEvent::Disconnected { cause } => todo!(),
                 TransportEvent::DataReceived { packet, task } => {

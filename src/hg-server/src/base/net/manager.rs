@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use hg_common::base::{
     net::{back_pressure::ErasedTaskGuard, codec::FrameEncoder, transport::PeerId},
-    rpc::{RpcNodeServer, RpcServer, RpcServerFlushTransport},
+    rpc::{RpcKind, RpcKindServer, RpcNode, RpcNodeServer, RpcServer, RpcServerFlushTransport},
     time::RunLoop,
 };
 use hg_ecs::{
@@ -35,8 +35,24 @@ impl NetManager {
         })
     }
 
-    pub fn rpc(&self) -> Obj<RpcServer> {
-        self.rpc
+    pub fn define<K: RpcKindServer>(&mut self) {
+        self.rpc.define::<K>();
+    }
+
+    pub fn register(&mut self, node: Obj<RpcNode>) -> Obj<RpcNodeServer> {
+        self.rpc.register(node)
+    }
+
+    pub fn replicate(&mut self, node: Obj<RpcNodeServer>, peer: PeerId) {
+        self.rpc.replicate(node, peer);
+    }
+
+    pub fn de_replicate(&mut self, node: Obj<RpcNodeServer>, peer: PeerId) {
+        self.rpc.de_replicate(node, peer);
+    }
+
+    pub fn send<K: RpcKind>(&mut self, target: Obj<RpcNodeServer>, packet: K::ClientBound) {
+        self.rpc.send_packet::<K>(target, packet);
     }
 
     pub fn on_join(&self) -> SimpleSignalReader<PeerId> {

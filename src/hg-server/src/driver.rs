@@ -23,8 +23,8 @@ pub fn world_init(world: &mut World, transport: Transport) {
         .with(RunLoop::new(tps_to_dt(60.)));
 
     // Define RPC kinds
-    let nm = Entity::service::<NetManager>();
-    nm.rpc().define::<PlayerRpcKindServer>();
+    let mut nm = Entity::service::<NetManager>();
+    nm.define::<PlayerRpcKindServer>();
 
     // Spawn a player
     spawn_player(Entity::root());
@@ -48,12 +48,12 @@ pub fn world_main_loop(world: &mut World) {
 }
 
 fn world_tick() {
-    let net = Entity::service::<NetManager>();
+    let mut net = Entity::service::<NetManager>();
     net.process();
 
     for &peer in &net.on_join() {
         for node in Query::<Obj<RpcNodeServer>>::new() {
-            net.rpc().replicate(node, peer);
+            net.replicate(node, peer);
         }
     }
 }

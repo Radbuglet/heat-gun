@@ -1,4 +1,7 @@
-use std::fmt;
+use std::{
+    fmt,
+    ops::{Deref, DerefMut},
+};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio_util::codec::Decoder;
@@ -26,7 +29,7 @@ impl Default for FrameEncoder {
 impl Clone for FrameEncoder {
     fn clone(&self) -> Self {
         let mut clone = Self::new();
-        clone.data_mut().extend_from_slice(&self.data()[..]);
+        clone.extend_from_slice(&self[..]);
         clone
     }
 }
@@ -38,14 +41,6 @@ impl FrameEncoder {
         let header = data.split();
 
         Self { header, data }
-    }
-
-    pub fn data(&self) -> &BytesMut {
-        &self.data
-    }
-
-    pub fn data_mut(&mut self) -> &mut BytesMut {
-        &mut self.data
     }
 
     pub fn finish(mut self) -> Bytes {
@@ -62,6 +57,20 @@ impl FrameEncoder {
         // Produce final packet
         self.header.advance(header_start);
         self.header.freeze()
+    }
+}
+
+impl Deref for FrameEncoder {
+    type Target = BytesMut;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl DerefMut for FrameEncoder {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.data
     }
 }
 

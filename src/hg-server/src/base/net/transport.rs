@@ -58,7 +58,7 @@ pub enum TransportEvent {
 #[derive(Debug)]
 enum PeerSendAction {
     Reliable {
-        pre_framed: Bytes,
+        framed: Bytes,
         task_guard: ErasedTaskGuard,
     },
     Disconnect(Bytes),
@@ -165,14 +165,11 @@ impl TransportWriteHandle {
         self.peer(id).is_ok()
     }
 
-    pub fn peer_send(&self, id: PeerId, pre_framed: Bytes, task_guard: ErasedTaskGuard) {
+    pub fn peer_send(&self, id: PeerId, framed: Bytes, task_guard: ErasedTaskGuard) {
         absorb_result_std::<_, PeerDisconnectError>("send a packet", || {
             self.peer(id)?
                 .send_action_tx
-                .send(PeerSendAction::Reliable {
-                    pre_framed,
-                    task_guard,
-                })
+                .send(PeerSendAction::Reliable { framed, task_guard })
                 .map_err(|_| PeerDisconnectError)?;
 
             Ok(())
@@ -417,12 +414,9 @@ impl TransportPeerWorker {
 
             // Process it!
             match send_action {
-                PeerSendAction::Reliable {
-                    pre_framed: data,
-                    task_guard,
-                } => {
+                PeerSendAction::Reliable { framed, task_guard } => {
                     // TODO: parse error
-                    tx.write_all(&data).await?;
+                    tx.write_all(&framed).await?;
                     drop(task_guard);
                 }
                 PeerSendAction::Disconnect(bytes) => {

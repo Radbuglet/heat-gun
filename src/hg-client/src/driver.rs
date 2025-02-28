@@ -27,7 +27,7 @@ pub fn world_init(world: &mut World) {
     bind!(world);
 
     let mgr = NetManager::new(Entity::root()).unwrap();
-    mgr.define_rpc::<PlayerRpcKindClient>();
+    mgr.define::<PlayerRpcKindClient>();
 
     let level = spawn_level(Entity::root());
 

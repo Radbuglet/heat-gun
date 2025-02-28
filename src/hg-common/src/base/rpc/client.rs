@@ -167,15 +167,13 @@ impl RpcClient {
     pub fn send_packet<K: RpcKind>(
         self: Obj<Self>,
         target: Obj<RpcNodeClient>,
-        packet: K::ClientBound,
+        packet: K::ServerBound,
     ) -> FrameEncoder {
         assert_eq!(target.kind, RpcKindId::of::<K>());
 
         let mut encoder = FrameEncoder::new();
-        encoder.data_mut().encode_multi_part(&packet);
-        encoder
-            .data_mut()
-            .encode_multi_part(&RpcSbHeader::SendMessage(target.node_id));
+        encoder.encode_multi_part(&packet);
+        encoder.encode_multi_part(&RpcSbHeader::SendMessage(target.node_id));
 
         encoder
     }
