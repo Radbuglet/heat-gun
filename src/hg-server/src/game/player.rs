@@ -2,7 +2,7 @@ use std::context::{infer_bundle, Bundle};
 
 use hg_common::base::{
     net::transport::PeerId,
-    rpc::{RpcKind, RpcKindServer},
+    rpc::{RpcKind, RpcKindServer, RpcServerCup, RpcServerSb},
 };
 use hg_ecs::{component, Obj};
 use serde::{Deserialize, Serialize};
@@ -35,7 +35,7 @@ impl RpcKindServer for PlayerRpcKindServer {
         cx: Bundle<Self::Cx<'_>>,
         peer: PeerId,
         target: Obj<Self::RpcRoot>,
-    ) -> <Self::Kind as RpcKind>::Catchup {
+    ) -> RpcServerCup<Self> {
         let static ..cx;
 
         let _ = peer;
@@ -49,7 +49,7 @@ impl RpcKindServer for PlayerRpcKindServer {
         cx: Bundle<Self::Cx<'_>>,
         target: Obj<Self::RpcRoot>,
         sender: PeerId,
-        packet: <Self::Kind as RpcKind>::ServerBound,
+        packet: RpcServerSb<Self>,
     ) -> anyhow::Result<()> {
         todo!()
     }

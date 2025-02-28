@@ -1,4 +1,4 @@
-use std::{any::TypeId, num::NonZeroU64};
+use std::{any::TypeId, borrow::Cow, num::NonZeroU64};
 
 use derive_where::derive_where;
 use hg_ecs::component;
@@ -20,7 +20,7 @@ pub enum RpcSbHeader {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RpcCbHeader {
     SendMessage(RpcNodeId),
-    CreateNode(RpcNodeId),
+    CreateNode(RpcNodeId, Cow<'static, str>),
     DeleteNode(RpcNodeId),
 }
 
