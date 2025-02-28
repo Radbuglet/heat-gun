@@ -80,31 +80,25 @@ impl Transport {
         Self { state, event_rx }
     }
 
-    pub fn send(&self, action: PeerSendAction) {
-        absorb_result_std::<_, _>("send a packet", || self.state.send_action_tx.send(action));
-    }
-
-    pub fn send_reliable(&self, pre_framed: Bytes, task_guard: ErasedTaskGuard) {
-        self.send(PeerSendAction::Reliable {
-            pre_framed,
-            task_guard,
+    pub fn send(&self, pre_framed: Bytes, task_guard: ErasedTaskGuard) {
+        absorb_result_std::<_, _>("send a packet", || {
+            self.state.send_action_tx.send(PeerSendAction::Reliable {
+                pre_framed,
+                task_guard,
+            })
         });
     }
 
     pub fn disconnect(&self, data: Bytes) {
-        self.send(PeerSendAction::Disconnect(data));
+        absorb_result_std::<_, _>("disconnect", || {
+            self.state
+                .send_action_tx
+                .send(PeerSendAction::Disconnect(data))
+        });
     }
 
-    pub fn process_non_blocking(&mut self) -> Option<TransportEvent> {
+    pub fn process(&mut self) -> Option<TransportEvent> {
         self.event_rx.try_recv().ok()
-    }
-
-    pub fn process_blocking(&mut self) -> Option<TransportEvent> {
-        self.event_rx.blocking_recv()
-    }
-
-    pub async fn process_async(&mut self) -> Option<TransportEvent> {
-        self.event_rx.recv().await
     }
 }
 

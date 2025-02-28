@@ -1,9 +1,7 @@
-use bytes::BufMut;
 use hg_common::base::{
     collide::{bus::sys_flush_colliders, update::sys_update_colliders},
     debug::DebugDraw,
     kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame, Pos},
-    net::{back_pressure::ErasedTaskGuard, codec::FrameEncoder},
 };
 use hg_ecs::{bind, Entity, World};
 use macroquad::{math::Vec2, time::get_frame_time};
@@ -16,19 +14,20 @@ use crate::{
             sprite::SolidRenderer,
             tile::TileRenderer,
         },
-        net::{NetManager, TransportEvent},
+        net::NetManager,
     },
     game::{
         debug::sys_update_debug,
         level::spawn_level,
-        player::{spawn_player, sys_update_player_camera, sys_update_players},
+        player::{spawn_player, sys_update_player_camera, sys_update_players, PlayerRpcKindClient},
     },
 };
 
 pub fn world_init(world: &mut World) {
     bind!(world);
 
-    Entity::root().add(NetManager::new().unwrap());
+    let mgr = NetManager::new(Entity::root()).unwrap();
+    mgr.define_rpc::<PlayerRpcKindClient>();
 
     let level = spawn_level(Entity::root());
 
@@ -61,28 +60,7 @@ pub fn world_update() {
     sys_update_player_camera();
     sys_update_virtual_cameras();
     sys_update_debug();
-
-    let mut nm = Entity::service::<NetManager>();
-
-    while let Some(ev) = nm.transport.process_non_blocking() {
-        match ev {
-            TransportEvent::Connected => {
-                tracing::info!("Connected");
-            }
-            TransportEvent::Disconnected { cause } => {
-                tracing::info!("Disconnected: {cause:?}");
-            }
-            TransportEvent::DataReceived { packet, task } => {
-                tracing::info!("DataReceived: {packet:?}");
-                drop(task);
-            }
-        }
-    }
-
-    let mut packet = FrameEncoder::new();
-    packet.data_mut().put_bytes(0xAB, 1024);
-    nm.transport
-        .send_reliable(packet.finish(), ErasedTaskGuard::noop());
+    Entity::service::<NetManager>().process();
 }
 
 pub fn world_render() {

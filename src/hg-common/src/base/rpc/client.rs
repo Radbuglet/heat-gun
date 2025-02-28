@@ -33,6 +33,7 @@ pub trait RpcKindClient: Sized + 'static {
 
     fn create(
         cx: Bundle<Self::Cx<'_>>,
+        client: Obj<RpcClient>,
         id: RpcNodeId,
         packet: RpcClientCup<Self>,
     ) -> anyhow::Result<Obj<Self::RpcRoot>>;
@@ -73,7 +74,7 @@ impl<K: RpcKindClient> HasKindVtable for K {
             // Create the node
             let userdata = {
                 bind!(world, let cx: _);
-                K::create(cx, target, packet)?
+                K::create(cx, client, target, packet)?
             };
 
             // Create its book-keeping components.

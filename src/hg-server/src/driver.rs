@@ -1,11 +1,14 @@
 use std::context::{infer_bundle, Bundle};
 
-use hg_common::base::time::{tps_to_dt, RunLoop};
-use hg_ecs::{bind, Entity, World};
+use hg_common::base::{
+    rpc::RpcNodeServer,
+    time::{tps_to_dt, RunLoop},
+};
+use hg_ecs::{bind, Entity, Obj, Query, World};
 
 use crate::{
     base::net::{NetManager, Transport},
-    game::player::PlayerRpcKindServer,
+    game::player::{spawn_player, PlayerRpcKindServer},
 };
 
 pub fn world_init(world: &mut World, transport: Transport) {
@@ -23,7 +26,8 @@ pub fn world_init(world: &mut World, transport: Transport) {
     let nm = Entity::service::<NetManager>();
     nm.rpc().define::<PlayerRpcKindServer>();
 
-    // TODO
+    // Spawn a player
+    spawn_player(Entity::root());
 }
 
 pub fn world_main_loop(world: &mut World) {
@@ -33,6 +37,7 @@ pub fn world_main_loop(world: &mut World) {
 
     loop {
         world_tick();
+        Entity::flush(|_world| {});
 
         if rl.should_exit() {
             break;
@@ -43,5 +48,12 @@ pub fn world_main_loop(world: &mut World) {
 }
 
 fn world_tick() {
-    Entity::service::<NetManager>().process();
+    let net = Entity::service::<NetManager>();
+    net.process();
+
+    for &peer in &net.on_join() {
+        for node in Query::<Obj<RpcNodeServer>>::new() {
+            net.rpc().replicate(node, peer);
+        }
+    }
 }

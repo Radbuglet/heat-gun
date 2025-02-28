@@ -1,15 +1,26 @@
 use bytes::Bytes;
-use hg_common::base::{net::transport::PeerId, rpc::RpcServer, time::RunLoop};
-use hg_ecs::{component, Entity, Obj};
+use hg_common::base::{
+    net::{back_pressure::ErasedTaskGuard, codec::FrameEncoder, transport::PeerId},
+    rpc::{RpcNodeServer, RpcServer, RpcServerFlushTransport},
+    time::RunLoop,
+};
+use hg_ecs::{
+    bind, component,
+    signal::{SimpleSignal, SimpleSignalReader},
+    Entity, Obj, World,
+};
 use hg_utils::hash::FxHashMap;
 
 use super::{Transport, TransportEvent};
+
+// === NetManager === //
 
 #[derive(Debug)]
 pub struct NetManager {
     transport: Transport,
     rpc: Obj<RpcServer>,
     sessions: FxHashMap<PeerId, Obj<NetSession>>,
+    on_join: SimpleSignal<PeerId>,
 }
 
 component!(NetManager);
@@ -20,6 +31,7 @@ impl NetManager {
             transport,
             rpc: Entity::new(me).add(RpcServer::new()),
             sessions: FxHashMap::default(),
+            on_join: SimpleSignal::new(),
         })
     }
 
@@ -27,7 +39,15 @@ impl NetManager {
         self.rpc
     }
 
+    pub fn on_join(&self) -> SimpleSignalReader<PeerId> {
+        self.on_join.reader()
+    }
+
     pub fn process(mut self: Obj<Self>) {
+        self.on_join.reset();
+
+        self.rpc.flush(&mut ServerFlushTrans(self));
+
         while let Some(ev) = self.transport.process() {
             match ev {
                 TransportEvent::Connected { peer, task } => {
@@ -41,7 +61,7 @@ impl NetManager {
                 }
                 TransportEvent::DataReceived { peer, packet, task } => {
                     let sess = self.sessions[&peer];
-                    if let Err(err) = self.process_packet(sess, packet) {
+                    if let Err(err) = sess.process_recv(packet) {
                         tracing::error!("failed to process packet sent by peer {peer}: {err:?}");
 
                         self.transport
@@ -56,14 +76,45 @@ impl NetManager {
                 }
             }
         }
+
+        self.on_join.lock();
+    }
+}
+
+struct ServerFlushTrans(Obj<NetManager>);
+
+impl RpcServerFlushTransport for ServerFlushTrans {
+    fn send_packet_single(&mut self, world: &mut World, target: PeerId, packet: FrameEncoder) {
+        bind!(world);
+
+        self.0.transport.write_handle_ref().peer_send(
+            target,
+            packet.finish(),
+            ErasedTaskGuard::noop(),
+        );
     }
 
-    fn process_packet(self: Obj<Self>, sess: Obj<NetSession>, packet: Bytes) -> anyhow::Result<()> {
-        match sess.state {
-            SessionState::Play => self.rpc.recv_packet(sess.peer, packet),
+    fn send_packet_multi(
+        &mut self,
+        world: &mut hg_ecs::World,
+        target: Obj<RpcNodeServer>,
+        packet: FrameEncoder,
+    ) {
+        bind!(world);
+
+        let packet = packet.finish();
+
+        for &peer in target.visible_to() {
+            self.0.transport.write_handle_ref().peer_send(
+                peer,
+                packet.clone(),
+                ErasedTaskGuard::noop(),
+            );
         }
     }
 }
+
+// === NetSession === //
 
 #[derive(Debug)]
 pub struct NetSession {
@@ -74,6 +125,7 @@ pub struct NetSession {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum SessionState {
+    Login,
     Play,
 }
 
@@ -84,7 +136,19 @@ impl NetSession {
         Self {
             manager,
             peer,
-            state: SessionState::Play,
+            state: SessionState::Login,
+        }
+    }
+
+    pub fn process_recv(mut self: Obj<Self>, packet: Bytes) -> anyhow::Result<()> {
+        match self.state {
+            SessionState::Login => {
+                tracing::info!("Peer {} logged in with {packet:?}", self.peer);
+                self.state = SessionState::Play;
+                self.manager.on_join.fire(self.peer);
+                Ok(())
+            }
+            SessionState::Play => self.manager.rpc.recv_packet(self.peer, packet),
         }
     }
 }

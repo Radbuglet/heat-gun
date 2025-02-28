@@ -1,28 +1,17 @@
 use std::context::{infer_bundle, Bundle};
 
-use hg_common::base::{
-    net::transport::PeerId,
-    rpc::{RpcKind, RpcKindServer, RpcServerCup, RpcServerSb},
+use hg_common::{
+    base::{
+        net::transport::PeerId,
+        rpc::{RpcKindServer, RpcNode, RpcServerCup, RpcServerSb},
+    },
+    game::player::{PlayerRpcCatchup, PlayerRpcKind},
 };
-use hg_ecs::{component, Obj};
-use serde::{Deserialize, Serialize};
+use hg_ecs::{component, Entity, Obj};
+
+use crate::base::net::NetManager;
 
 // === Rpc === //
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlayerRpcCatchup {
-    pub name: String,
-}
-
-pub struct PlayerRpcKind;
-
-impl RpcKind for PlayerRpcKind {
-    const ID: &'static str = "player";
-
-    type Catchup = PlayerRpcCatchup;
-    type ServerBound = ();
-    type ClientBound = ();
-}
 
 pub struct PlayerRpcKindServer;
 
@@ -63,3 +52,17 @@ pub struct PlayerServerState {
 }
 
 component!(PlayerServerState);
+
+// === Prefabs === //
+
+pub fn spawn_player(parent: Entity) -> Entity {
+    let player = Entity::new(parent)
+        .with(RpcNode::new::<PlayerRpcKind>())
+        .with(PlayerServerState {
+            name: "player_mc_playerface".to_string(),
+        });
+
+    Entity::service::<NetManager>().rpc().register(player.get());
+
+    player
+}

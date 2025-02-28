@@ -3,6 +3,7 @@
 pub mod archetype;
 pub mod entity;
 pub mod query;
+pub mod signal;
 pub mod world;
 
 pub use thunderdome::Index;

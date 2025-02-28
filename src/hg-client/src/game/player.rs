@@ -1,3 +1,5 @@
+use std::context::{infer_bundle, Bundle};
+
 use hg_common::{
     base::{
         collide::{
@@ -5,7 +7,9 @@ use hg_common::{
             update::ColliderFollows,
         },
         kinematic::{KinematicProps, Pos, Vel},
+        rpc::{RpcClient, RpcClientCb, RpcClientCup, RpcKindClient, RpcNodeId},
     },
+    game::player::PlayerRpcKind,
     utils::math::{Aabb, RgbaColor},
 };
 use hg_ecs::{component, Entity, Obj, Query};
@@ -15,6 +19,38 @@ use macroquad::{
 };
 
 use crate::base::gfx::{bus::register_gfx, sprite::SolidRenderer};
+
+// === Rpc === //
+
+pub struct PlayerRpcKindClient;
+
+impl RpcKindClient for PlayerRpcKindClient {
+    type Kind = PlayerRpcKind;
+    type Cx<'a> = infer_bundle!('a);
+    type RpcRoot = PlayerController;
+
+    fn create(
+        cx: Bundle<Self::Cx<'_>>,
+        client: Obj<RpcClient>,
+        id: RpcNodeId,
+        packet: RpcClientCup<Self>,
+    ) -> anyhow::Result<Obj<Self::RpcRoot>> {
+        dbg!(id, packet);
+        anyhow::bail!("Not implemented");
+    }
+
+    fn destroy(cx: Bundle<Self::Cx<'_>>, target: Obj<Self::RpcRoot>) -> anyhow::Result<()> {
+        anyhow::bail!("Not implemented");
+    }
+
+    fn process(
+        cx: Bundle<Self::Cx<'_>>,
+        target: Obj<Self::RpcRoot>,
+        packet: RpcClientCb<Self>,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("Not implemented");
+    }
+}
 
 // === Components === //
 

@@ -10,17 +10,17 @@ use std::{
 
 use anyhow::Context as _;
 use bytes::Bytes;
-use futures::{FutureExt, StreamExt as _};
+use futures::StreamExt as _;
 use hg_common::{
     base::net::{
         back_pressure::{BackPressureAsync, ErasedTaskGuard},
         codec::FrameDecoder,
         protocol::SocketCloseReason,
-        transport::{filter_framed_read_failure, PeerId},
+        transport::{filter_framed_read_failure, run_transport_data_handler, PeerId},
     },
     utils::lang::{
-        absorb_result_anyhow, absorb_result_std, catch_termination_async,
-        flatten_tokio_join_result, worker_panic_error, FusedFuture, MultiError, MultiResult,
+        absorb_result_anyhow, absorb_result_std, catch_termination_async, worker_panic_error,
+        MultiError, MultiResult,
     },
 };
 use hg_utils::hash::FxHashMap;
@@ -340,66 +340,21 @@ impl TransportPeerWorker {
             .map_err(MultiError::new)
             .context("failed to open main stream")?;
 
-        // Spawn two tasks to handle the read and write sides of this connection separately.
-        let rx_task = self.clone().run_conn_rx(rx).in_current_span();
-        let rx_task = pin!(tokio::spawn(rx_task)
-            .map(|v| flatten_tokio_join_result(v).context("receiver task crashed")));
+        tracing::info!("Received initial packet!");
 
-        let tx_task = self
-            .clone()
-            .run_conn_tx(tx, send_action_rx)
-            .in_current_span();
+        // Process the stream!
+        run_transport_data_handler(
+            self.conn.clone(),
+            tokio::spawn(self.clone().run_conn_rx(rx).in_current_span()),
+            tokio::spawn(
+                self.clone()
+                    .run_conn_tx(tx, send_action_rx)
+                    .in_current_span(),
+            ),
+        )
+        .await?;
 
-        let tx_task = pin!(tokio::spawn(tx_task)
-            .map(|v| flatten_tokio_join_result(v).context("transmission task crashed")));
-
-        let mut rx_task = FusedFuture::new(rx_task);
-        let mut tx_task = FusedFuture::new(tx_task);
-
-        // Find the side which terminates first.
-        let first = tokio::select! {
-            first = rx_task.wait() => first.unwrap(),
-            first = tx_task.wait() => first.unwrap(),
-        };
-
-        // Ensure that the other side also terminates
-        if first.is_err() {
-            // If `res` was not erroneous, we know the first task to finish must have encountered
-            // a socket EOF, which occurs on both sides of the connection. Hence, there is no need
-            // to do anything to stop the other task.
-
-            // If it was erroneous, we need to close the socket ourselves.
-            self.conn.close(SocketCloseReason::Crash.code().into(), &[]);
-        }
-
-        // Ensure that the other side terminates before cleaning up the task.
-        let (lhs, rhs) = tokio::join!(rx_task.wait(), tx_task.wait());
-        let second = lhs.or(rhs).unwrap();
-
-        // Parse the connection error.
-        let third = {
-            use quinn::ConnectionError::*;
-
-            let err = self.conn.close_reason().unwrap();
-            #[rustfmt::skip]
-            let is_err = match err {
-                VersionMismatch
-                | TransportError(_)
-                | ConnectionClosed(_)
-                | Reset
-                | TimedOut
-                | CidsExhausted => true,
-                ApplicationClosed(_) | LocallyClosed => false,
-            };
-
-            if is_err {
-                Err(anyhow::Error::new(err).context("error ocurred in connection"))
-            } else {
-                Ok(())
-            }
-        };
-
-        MultiError::from_iter([first, second, third])
+        Ok(())
     }
 
     async fn run_conn_rx(self, rx: quinn::RecvStream) -> anyhow::Result<()> {
