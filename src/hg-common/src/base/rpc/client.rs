@@ -1,5 +1,5 @@
 use std::{
-    any::type_name,
+    any::{type_name, TypeId},
     context::{pack, Bundle, BundleItemSetFor},
     fmt, mem,
 };
@@ -11,10 +11,10 @@ use hg_utils::hash::{hash_map, FxHashMap};
 
 use crate::base::{
     net::{FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket as _},
-    rpc::{RpcNode, RpcSbHeader},
+    rpc::RpcSbHeader,
 };
 
-use super::{RpcCbHeader, RpcKind, RpcKindId, RpcNodeId};
+use super::{RpcCbHeader, RpcKind, RpcNodeId};
 
 // === RpcKind === //
 
@@ -77,13 +77,8 @@ impl<K: RpcKindClient> HasKindVtable for K {
             // Create its book-keeping components.
             bind!(world, let cx: &AccessComp<K::RpcRoot>);
             let node = userdata.entity(pack!(cx));
-            let kind_id = RpcKindId::of::<K::Kind>();
-            node.add(RpcNode {
-                kind: kind_id,
-                id: target,
-            });
             let client_handle = node.add(RpcNodeClient {
-                kind: kind_id,
+                kind: TypeId::of::<K::Kind>(),
                 vtable: <K as HasKindVtable>::VTABLE,
                 node_id: target,
                 userdata: Obj::raw(userdata),
@@ -124,7 +119,7 @@ impl<K: RpcKindClient> HasKindVtable for K {
 
 #[derive(Debug, Default)]
 pub struct RpcClient {
-    kinds_by_type: FxHashMap<RpcKindId, KindVtableRef>,
+    kinds_by_type: FxHashMap<TypeId, KindVtableRef>,
     kinds_by_name: FxHashMap<&'static str, KindVtableRef>,
     id_to_node: FxHashMap<RpcNodeId, Obj<RpcNodeClient>>,
     queued_packets: Vec<FrameEncoder>,
@@ -138,7 +133,7 @@ impl RpcClient {
     }
 
     pub fn define<K: RpcKindClient>(&mut self) -> &mut Self {
-        let kind_id = RpcKindId::of::<K::Kind>();
+        let kind_id = TypeId::of::<K::Kind>();
         let hash_map::Entry::Vacant(ty_entry) = self.kinds_by_type.entry(kind_id) else {
             panic!(
                 "RPC kind {:?} registered more than once",
@@ -146,8 +141,13 @@ impl RpcClient {
             );
         };
 
-        let hash_map::Entry::Vacant(name_entry) = self.kinds_by_name.entry(kind_id.id()) else {
-            panic!("RPC kind name {:?} registered more than once", kind_id.id(),);
+        let hash_map::Entry::Vacant(name_entry) =
+            self.kinds_by_name.entry(<K::Kind as RpcKind>::ID)
+        else {
+            panic!(
+                "RPC kind name {:?} registered more than once",
+                <K::Kind as RpcKind>::ID,
+            );
         };
 
         let vtable = <K as HasKindVtable>::VTABLE;
@@ -166,7 +166,7 @@ impl RpcClient {
         target: Obj<RpcNodeClient>,
         packet: K::ServerBound,
     ) {
-        assert_eq!(target.kind, RpcKindId::of::<K>());
+        assert_eq!(target.kind, TypeId::of::<K>());
 
         let mut encoder = FrameEncoder::new();
         encoder.encode_multi_part(&packet);
@@ -233,7 +233,7 @@ impl RpcClient {
 
 #[derive(Debug)]
 pub struct RpcNodeClient {
-    kind: RpcKindId,
+    kind: TypeId,
     vtable: KindVtableRef,
     node_id: RpcNodeId,
     userdata: Index,
@@ -243,10 +243,6 @@ pub struct RpcNodeClient {
 component!(RpcNodeClient);
 
 impl RpcNodeClient {
-    pub fn kind(&self) -> RpcKindId {
-        self.kind
-    }
-
     pub fn id(&self) -> RpcNodeId {
         self.node_id
     }
@@ -255,15 +251,16 @@ impl RpcNodeClient {
         self.client
     }
 
-    fn userdata<K: RpcKindClient>(
+    pub fn userdata<K: RpcKindClient>(
         mut self: Obj<Self>,
         cx: Bundle<&AccessComp<K::RpcRoot>>,
     ) -> Obj<K::RpcRoot> {
-        debug_assert_eq!(self.kind(), RpcKindId::of::<K::Kind>());
+        debug_assert_eq!(self.kind, TypeId::of::<K::Kind>());
 
         if self.userdata == Index::DANGLING {
             self.userdata = Obj::raw(self.entity().get::<K::RpcRoot>(pack!(cx)));
         }
+
         Obj::from_raw(self.userdata)
     }
 }

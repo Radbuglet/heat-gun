@@ -1,4 +1,5 @@
 use std::{
+    any::TypeId,
     borrow::Cow,
     context::{infer_bundle, pack, Bundle, BundleItemSetFor},
     fmt, mem,
@@ -17,7 +18,7 @@ use crate::base::net::{
     FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket as _,
 };
 
-use super::{RpcCbHeader, RpcKind, RpcKindId, RpcNode, RpcNodeId, RpcSbHeader};
+use super::{RpcCbHeader, RpcKind, RpcNodeId, RpcSbHeader};
 
 // === RpcKind === //
 
@@ -110,7 +111,7 @@ impl<K: RpcKindServer> HasKindVtable for K {
 pub struct RpcServer {
     id_to_node: FxHashMap<RpcNodeId, Obj<RpcNodeServer>>,
     id_gen: RpcNodeId,
-    dirty_queues: FxHashSet<Obj<RpcNodeServerQueue>>,
+    dirty_queues: Vec<Obj<RpcNodeServerQueue>>,
 }
 
 component!(RpcServer);
@@ -126,14 +127,14 @@ impl RpcServer {
         Self {
             id_to_node: FxHashMap::default(),
             id_gen: RpcNodeId(NonZeroU64::new(1).unwrap()),
-            dirty_queues: FxHashSet::default(),
+            dirty_queues: Vec::new(),
         }
     }
 
     pub fn register_node<K: RpcKindServer>(
         mut self: Obj<Self>,
         node: Entity,
-    ) -> (Obj<RpcNode>, Obj<RpcNodeServer>) {
+    ) -> Obj<RpcNodeServer> {
         // Generate a unique node ID
         let next_id = self
             .id_gen
@@ -154,12 +155,8 @@ impl RpcServer {
         });
 
         // Extend the node with node state
-        let generic_node = node.add(RpcNode {
-            kind: RpcKindId::of::<K::Kind>(),
-            id: node_id,
-        });
         let server_node = node.add(RpcNodeServer {
-            kind: RpcKindId::of::<K::Kind>(),
+            kind: TypeId::of::<K::Kind>(),
             vtable: <K as HasKindVtable>::VTABLE,
             node_id,
             userdata: Index::DANGLING,
@@ -171,7 +168,7 @@ impl RpcServer {
         // Register in the ID map
         self.id_to_node.insert(node_id, server_node);
 
-        (generic_node, server_node)
+        server_node
     }
 
     pub fn register_peer(self: Obj<Self>, peer: Entity) -> Obj<RpcPeer> {
@@ -292,7 +289,7 @@ pub trait RpcServerFlushTransport {
 
 #[derive(Debug)]
 pub struct RpcNodeServer {
-    kind: RpcKindId,
+    kind: TypeId,
     vtable: KindVtableRef,
     node_id: RpcNodeId,
     userdata: Index,
@@ -304,10 +301,6 @@ pub struct RpcNodeServer {
 component!(RpcNodeServer);
 
 impl RpcNodeServer {
-    pub fn kind(&self) -> RpcKindId {
-        self.kind
-    }
-
     pub fn id(&self) -> RpcNodeId {
         self.node_id
     }
@@ -354,7 +347,7 @@ impl RpcNodeServer {
     }
 
     pub fn broadcast<K: RpcKind>(mut self: Obj<Self>, packet: &K::ClientBound) {
-        assert_eq!(self.kind, RpcKindId::of::<K>());
+        assert_eq!(self.kind, TypeId::of::<K>());
 
         let mut encoder = FrameEncoder::new();
 
@@ -380,11 +373,11 @@ impl RpcNodeServer {
         }
     }
 
-    fn userdata<K: RpcKindServer>(
+    pub fn userdata<K: RpcKindServer>(
         mut self: Obj<Self>,
         cx: Bundle<&AccessComp<K::RpcRoot>>,
     ) -> Obj<K::RpcRoot> {
-        debug_assert_eq!(self.kind(), RpcKindId::of::<K::Kind>());
+        debug_assert_eq!(self.kind, TypeId::of::<K::Kind>());
 
         if self.userdata == Index::DANGLING {
             self.userdata = Obj::raw(self.entity().get::<K::RpcRoot>(pack!(cx)));
@@ -419,7 +412,7 @@ impl RpcNodeServerQueue {
         }
 
         self.marked_dirty = true;
-        self.server.dirty_queues.insert(self);
+        self.server.dirty_queues.push(self);
     }
 }
 
@@ -458,7 +451,7 @@ impl RpcPeer {
 
 // === Systems === //
 
-pub fn add_server_rpc_node<K: RpcKindServer>(target: Entity) -> (Obj<RpcNode>, Obj<RpcNodeServer>) {
+pub fn add_server_rpc_node<K: RpcKindServer>(target: Entity) -> Obj<RpcNodeServer> {
     target.deep_get::<RpcServer>().register_node::<K>(target)
 }
 
