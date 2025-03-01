@@ -20,7 +20,6 @@ use crate::{
     base::net::{
         back_pressure::{BackPressureAsync, ErasedTaskGuard},
         codec::FrameDecoder,
-        protocol::SocketCloseReason,
         transport::{PeerDisconnectError, PeerId, ServerTransport, ServerTransportEvent},
     },
     utils::lang::{
@@ -29,7 +28,9 @@ use crate::{
     },
 };
 
-use super::quic_shared::{filter_framed_read_failure, run_transport_data_handler};
+use super::quic_shared::{
+    filter_framed_read_failure, run_transport_data_handler, SocketCloseReason,
+};
 
 // === Transport === //
 

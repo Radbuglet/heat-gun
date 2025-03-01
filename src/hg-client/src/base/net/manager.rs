@@ -4,15 +4,12 @@ use anyhow::Context;
 use bytes::Bytes;
 use hg_common::base::{
     net::{
-        back_pressure::ErasedTaskGuard,
-        backends::quic_client::QuicClientTransport,
-        codec::FrameEncoder,
-        dev_cert::fetch_dev_pub_cert,
-        transport::{ClientTransport as _, ClientTransportEvent},
+        fetch_dev_pub_cert, quic_client::QuicClientTransport, ClientTransport as _,
+        ClientTransportEvent, ErasedTaskGuard, FrameEncoder,
     },
-    rpc::{RpcClient, RpcKind, RpcKindClient, RpcNodeClient},
+    rpc::RpcClient,
 };
-use hg_ecs::{component, Entity, Obj};
+use hg_ecs::{component, Obj};
 use quinn::crypto::rustls::QuicClientConfig;
 
 #[derive(Debug)]
@@ -24,7 +21,7 @@ pub struct NetManager {
 component!(NetManager);
 
 impl NetManager {
-    pub fn new(me: Entity) -> anyhow::Result<Obj<Self>> {
+    pub fn new(rpc: Obj<RpcClient>) -> anyhow::Result<Self> {
         let mut store = rustls::RootCertStore::empty();
         store.add(fetch_dev_pub_cert()?.context("no dev certificate found")?)?;
         let config = rustls::ClientConfig::builder()
@@ -40,24 +37,15 @@ impl NetManager {
             "localhost",
         );
 
-        let rpc = Entity::new(me).add(RpcClient::new());
-
-        let mgr = me.add(Self { transport, rpc });
-
-        Ok(mgr)
-    }
-
-    pub fn define<K: RpcKindClient>(mut self: Obj<Self>) {
-        self.rpc.define::<K>();
-    }
-
-    pub fn send<K: RpcKind>(mut self: Obj<Self>, target: Obj<RpcNodeClient>, data: K::ServerBound) {
-        let packet = self.rpc.send_packet::<K>(target, data);
-        self.transport
-            .send(packet.finish(), ErasedTaskGuard::noop());
+        Ok(Self { transport, rpc })
     }
 
     pub fn process(mut self: Obj<Self>) {
+        for packet in self.rpc.flush_sends() {
+            self.transport
+                .send(packet.finish(), ErasedTaskGuard::noop());
+        }
+
         while let Some(ev) = self.transport.process() {
             match ev {
                 ClientTransportEvent::Connected => {

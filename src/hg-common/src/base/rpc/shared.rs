@@ -4,7 +4,7 @@ use derive_where::derive_where;
 use hg_ecs::component;
 use serde::{Deserialize, Serialize};
 
-use crate::base::net::serialize::RpcPacket;
+use crate::base::net::RpcPacket;
 
 // === Protocol === //
 

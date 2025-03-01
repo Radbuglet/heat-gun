@@ -1,12 +1,10 @@
 use bytes::Bytes;
 use hg_common::base::{
     net::{
-        back_pressure::ErasedTaskGuard,
-        backends::quic_server::QuicServerTransport,
-        codec::FrameEncoder,
-        transport::{PeerId, ServerTransport as _, ServerTransportEvent},
+        quic_server::QuicServerTransport, ErasedTaskGuard, FrameEncoder, PeerId,
+        ServerTransport as _, ServerTransportEvent,
     },
-    rpc::{RpcKind, RpcKindServer, RpcNode, RpcNodeServer, RpcServer, RpcServerFlushTransport},
+    rpc::{RpcNodeServer, RpcServer, RpcServerFlushTransport},
     time::RunLoop,
 };
 use hg_ecs::{
@@ -29,33 +27,13 @@ pub struct NetManager {
 component!(NetManager);
 
 impl NetManager {
-    pub fn new(me: Entity, transport: QuicServerTransport) -> Obj<NetManager> {
-        me.add(Self {
+    pub fn new(transport: QuicServerTransport, rpc: Obj<RpcServer>) -> Self {
+        Self {
             transport,
-            rpc: Entity::new(me).add(RpcServer::new()),
+            rpc,
             sessions: FxHashMap::default(),
             on_join: SimpleSignal::new(),
-        })
-    }
-
-    pub fn define<K: RpcKindServer>(&mut self) {
-        self.rpc.define::<K>();
-    }
-
-    pub fn register(&mut self, node: Obj<RpcNode>) -> Obj<RpcNodeServer> {
-        self.rpc.register(node)
-    }
-
-    pub fn replicate(&mut self, node: Obj<RpcNodeServer>, peer: PeerId) {
-        self.rpc.replicate(node, peer);
-    }
-
-    pub fn de_replicate(&mut self, node: Obj<RpcNodeServer>, peer: PeerId) {
-        self.rpc.de_replicate(node, peer);
-    }
-
-    pub fn send<K: RpcKind>(&mut self, target: Obj<RpcNodeServer>, packet: K::ClientBound) {
-        self.rpc.send_packet::<K>(target, packet);
+        }
     }
 
     pub fn on_join(&self) -> SimpleSignalReader<PeerId> {

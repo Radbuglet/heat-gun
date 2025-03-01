@@ -13,9 +13,7 @@ use hg_utils::hash::{hash_map, FxHashMap, FxHashSet};
 
 use crate::{
     base::net::{
-        codec::FrameEncoder,
-        serialize::{MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket as _},
-        transport::PeerId,
+        FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, PeerId, RpcPacket as _,
     },
     field,
     utils::lang::{steal_from_ecs, Steal},

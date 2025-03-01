@@ -11,14 +11,15 @@ use crate::{
     base::net::{
         back_pressure::{BackPressureAsync, ErasedTaskGuard},
         codec::FrameDecoder,
-        protocol::SocketCloseReason,
         transport::{ClientTransport, ClientTransportEvent},
     },
     try_async,
     utils::lang::{absorb_result_std, catch_termination_async, worker_panic_error},
 };
 
-use super::quic_shared::{filter_framed_read_failure, run_transport_data_handler};
+use super::quic_shared::{
+    filter_framed_read_failure, run_transport_data_handler, SocketCloseReason,
+};
 
 // === Transport === //
 

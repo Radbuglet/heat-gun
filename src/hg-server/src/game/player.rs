@@ -2,14 +2,12 @@ use std::context::{infer_bundle, Bundle};
 
 use hg_common::{
     base::{
-        net::transport::PeerId,
-        rpc::{RpcKindServer, RpcNode, RpcServerCup, RpcServerSb},
+        net::PeerId,
+        rpc::{RpcKindServer, RpcNode, RpcServer, RpcServerCup, RpcServerSb},
     },
     game::player::{PlayerRpcCatchup, PlayerRpcKind},
 };
 use hg_ecs::{component, Entity, Obj};
-
-use crate::base::net::NetManager;
 
 // === Rpc === //
 
@@ -62,7 +60,7 @@ pub fn spawn_player(parent: Entity) -> Entity {
             name: "player_mc_playerface".to_string(),
         });
 
-    Entity::service::<NetManager>().register(player.get());
+    Entity::service::<RpcServer>().register(player.get());
 
     player
 }

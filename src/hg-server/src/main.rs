@@ -5,9 +5,7 @@ use std::{net::SocketAddr, str::FromStr, sync::Arc};
 
 use anyhow::Context;
 use driver::{world_init, world_main_loop};
-use hg_common::base::net::{
-    backends::quic_server::QuicServerTransport, dev_cert::generate_dev_priv_key,
-};
+use hg_common::base::net::{generate_dev_priv_key, quic_server::QuicServerTransport};
 use hg_ecs::World;
 use quinn::crypto::rustls::QuicServerConfig;
 use tracing::level_filters::LevelFilter;

@@ -1,7 +1,7 @@
 use std::{
     any::type_name,
     context::{pack, Bundle, BundleItemSetFor},
-    fmt,
+    fmt, mem,
 };
 
 use anyhow::Context as _;
@@ -10,10 +10,7 @@ use hg_ecs::{bind, component, entity::Component, AccessComp, Index, Obj, World, 
 use hg_utils::hash::{hash_map, FxHashMap};
 
 use crate::base::{
-    net::{
-        codec::FrameEncoder,
-        serialize::{MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket as _},
-    },
+    net::{FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket as _},
     rpc::{RpcNode, RpcSbHeader},
 };
 
@@ -130,6 +127,7 @@ pub struct RpcClient {
     kinds_by_type: FxHashMap<RpcKindId, KindVtableRef>,
     kinds_by_name: FxHashMap<&'static str, KindVtableRef>,
     id_to_node: FxHashMap<RpcNodeId, Obj<RpcNodeClient>>,
+    queued_packets: Vec<FrameEncoder>,
 }
 
 component!(RpcClient);
@@ -163,19 +161,18 @@ impl RpcClient {
         self.id_to_node.get(&id).copied()
     }
 
-    #[must_use]
     pub fn send_packet<K: RpcKind>(
-        self: Obj<Self>,
+        mut self: Obj<Self>,
         target: Obj<RpcNodeClient>,
         packet: K::ServerBound,
-    ) -> FrameEncoder {
+    ) {
         assert_eq!(target.kind, RpcKindId::of::<K>());
 
         let mut encoder = FrameEncoder::new();
         encoder.encode_multi_part(&packet);
         encoder.encode_multi_part(&RpcSbHeader::SendMessage(target.node_id));
 
-        encoder
+        self.queued_packets.push(encoder);
     }
 
     pub fn recv_packet(mut self: Obj<Self>, packet: Bytes) -> anyhow::Result<()> {
@@ -225,6 +222,10 @@ impl RpcClient {
                 Ok(())
             }
         }
+    }
+
+    pub fn flush_sends(mut self: Obj<Self>) -> Vec<FrameEncoder> {
+        mem::take(&mut self.queued_packets)
     }
 }
 
