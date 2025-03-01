@@ -1,10 +1,7 @@
 use std::context::{infer_bundle, Bundle};
 
 use hg_common::{
-    base::{
-        net::PeerId,
-        rpc::{RpcKindServer, RpcNode, RpcServer, RpcServerCup, RpcServerSb},
-    },
+    base::rpc::{add_server_rpc_node, RpcKindServer, RpcPeer, RpcServerCup, RpcServerSb},
     game::player::{PlayerRpcCatchup, PlayerRpcKind},
 };
 use hg_ecs::{component, Entity, Obj};
@@ -20,7 +17,7 @@ impl RpcKindServer for PlayerRpcKindServer {
 
     fn catchup(
         cx: Bundle<Self::Cx<'_>>,
-        peer: PeerId,
+        peer: Obj<RpcPeer>,
         target: Obj<Self::RpcRoot>,
     ) -> RpcServerCup<Self> {
         let static ..cx;
@@ -35,7 +32,7 @@ impl RpcKindServer for PlayerRpcKindServer {
     fn process(
         cx: Bundle<Self::Cx<'_>>,
         target: Obj<Self::RpcRoot>,
-        sender: PeerId,
+        sender: Obj<RpcPeer>,
         packet: RpcServerSb<Self>,
     ) -> anyhow::Result<()> {
         todo!()
@@ -54,13 +51,11 @@ component!(PlayerServerState);
 // === Prefabs === //
 
 pub fn spawn_player(parent: Entity) -> Entity {
-    let player = Entity::new(parent)
-        .with(RpcNode::new::<PlayerRpcKind>())
-        .with(PlayerServerState {
-            name: "player_mc_playerface".to_string(),
-        });
+    let player = Entity::new(parent).with(PlayerServerState {
+        name: "player_mc_playerface".to_string(),
+    });
 
-    Entity::service::<RpcServer>().register(player.get());
+    add_server_rpc_node::<PlayerRpcKindServer>(player);
 
     player
 }

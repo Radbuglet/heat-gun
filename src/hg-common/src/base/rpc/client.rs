@@ -80,7 +80,7 @@ impl<K: RpcKindClient> HasKindVtable for K {
             let kind_id = RpcKindId::of::<K::Kind>();
             node.add(RpcNode {
                 kind: kind_id,
-                id: Some(target),
+                id: target,
             });
             let client_handle = node.add(RpcNodeClient {
                 kind: kind_id,

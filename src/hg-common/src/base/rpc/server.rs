@@ -1,22 +1,20 @@
 use std::{
-    any::type_name,
     borrow::Cow,
-    context::{pack, Bundle, BundleItemSetFor},
+    context::{infer_bundle, pack, Bundle, BundleItemSetFor},
     fmt, mem,
     num::NonZeroU64,
 };
 
 use anyhow::Context;
 use bytes::Bytes;
-use hg_ecs::{bind, component, entity::Component, AccessComp, Index, Obj, World, WORLD};
-use hg_utils::hash::{hash_map, FxHashMap, FxHashSet};
+use hg_ecs::{
+    bind, component, entity::Component, query::query_removed, AccessComp, Entity, Index, Obj,
+    World, WORLD,
+};
+use hg_utils::hash::{FxHashMap, FxHashSet};
 
-use crate::{
-    base::net::{
-        FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, PeerId, RpcPacket as _,
-    },
-    field,
-    utils::lang::{steal_from_ecs, Steal},
+use crate::base::net::{
+    FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket as _,
 };
 
 use super::{RpcCbHeader, RpcKind, RpcKindId, RpcNode, RpcNodeId, RpcSbHeader};
@@ -35,14 +33,14 @@ pub trait RpcKindServer: Sized + 'static {
 
     fn catchup(
         cx: Bundle<Self::Cx<'_>>,
-        peer: PeerId,
+        peer: Obj<RpcPeer>,
         target: Obj<Self::RpcRoot>,
     ) -> RpcServerCup<Self>;
 
     fn process(
         cx: Bundle<Self::Cx<'_>>,
         target: Obj<Self::RpcRoot>,
-        sender: PeerId,
+        sender: Obj<RpcPeer>,
         packet: RpcServerSb<Self>,
     ) -> anyhow::Result<()>;
 }
@@ -50,8 +48,8 @@ pub trait RpcKindServer: Sized + 'static {
 type KindVtableRef = &'static KindVtable;
 
 struct KindVtable {
-    process_inbound: fn(&mut World, Obj<RpcNodeServer>, PeerId, Bytes) -> anyhow::Result<()>,
-    drain_replications: fn(&mut World, &mut KindData),
+    produce_catchup: fn(&mut World, Obj<RpcNodeServer>, Obj<RpcPeer>, &mut FrameEncoder),
+    process_inbound: fn(&mut World, Obj<RpcNodeServer>, Obj<RpcPeer>, Bytes) -> anyhow::Result<()>,
 }
 
 impl fmt::Debug for KindVtable {
@@ -66,6 +64,27 @@ trait HasKindVtable {
 
 impl<K: RpcKindServer> HasKindVtable for K {
     const VTABLE: KindVtableRef = &KindVtable {
+        produce_catchup: |world, target, peer, encoder| {
+            // Fetch the RPC node userdata
+            let (target_id, userdata) = {
+                bind!(world, let cx: _);
+
+                (target.node_id, target.userdata::<K>(cx))
+            };
+
+            // Produce the catchup structure
+            let catchup = {
+                bind!(world, let cx: _);
+                K::catchup(cx, peer, userdata)
+            };
+
+            // Serialize the catchup structure
+            encoder.encode_multi_part(&catchup);
+            encoder.encode_multi_part(&RpcCbHeader::CreateNode(
+                target_id,
+                Cow::Borrowed(<K::Kind as RpcKind>::ID),
+            ));
+        },
         process_inbound: |world, target, peer, packet| {
             // Deserialize the packet
             let packet = RpcServerSb::<K>::decode(&packet)?;
@@ -82,48 +101,6 @@ impl<K: RpcKindServer> HasKindVtable for K {
 
             Ok(())
         },
-        drain_replications: |world, kind_data| {
-            // Process replications
-            for (target, peer) in kind_data.now_visible.drain() {
-                // Fetch the RPC node userdata
-                let (target_id, userdata) = {
-                    bind!(world, let cx: _);
-
-                    (target.node_id, target.userdata::<K>(cx))
-                };
-
-                // Produce the catchup structure
-                let catchup = {
-                    bind!(world, let cx: _);
-                    K::catchup(cx, peer, userdata)
-                };
-
-                // Serialize the catchup structure
-                let mut encoder = FrameEncoder::new();
-
-                encoder.encode_multi_part(&catchup);
-                encoder.encode_multi_part(&RpcCbHeader::CreateNode(
-                    target_id,
-                    Cow::Borrowed(<K::Kind as RpcKind>::ID),
-                ));
-
-                kind_data.packet_replicate_queue.push((peer, encoder));
-            }
-
-            // Process de-replications
-            {
-                bind!(world);
-
-                for (target, peer) in kind_data.now_invisible.drain() {
-                    let mut encoder = FrameEncoder::new();
-                    let target_id = target.node_id;
-
-                    encoder.encode_multi_part(&RpcCbHeader::DeleteNode(target_id));
-
-                    kind_data.packet_de_replicate_queue.push((peer, encoder));
-                }
-            }
-        },
     };
 }
 
@@ -131,31 +108,9 @@ impl<K: RpcKindServer> HasKindVtable for K {
 
 #[derive(Debug)]
 pub struct RpcServer {
-    kinds: Steal<FxHashMap<RpcKindId, KindData>>,
     id_to_node: FxHashMap<RpcNodeId, Obj<RpcNodeServer>>,
     id_gen: RpcNodeId,
-}
-
-#[derive(Debug)]
-struct KindData {
-    vtable: KindVtableRef,
-
-    /// Fully-framed packets produced by explicit calls to `send_packet`.
-    packet_send_queue: Vec<(Obj<RpcNodeServer>, FrameEncoder)>,
-
-    /// The set of nodes now visible to given target peers. The `target`s' `visible_to` sets are
-    /// guaranteed to not contain the peer already.
-    now_visible: FxHashSet<(Obj<RpcNodeServer>, PeerId)>,
-
-    /// The set of nodes now invisible to given target peers. The `target`s' `visible_to` sets are
-    /// guaranteed to already contain the peer.
-    now_invisible: FxHashSet<(Obj<RpcNodeServer>, PeerId)>,
-
-    // TODO: document
-    packet_replicate_queue: Vec<(PeerId, FrameEncoder)>,
-
-    // TODO: document
-    packet_de_replicate_queue: Vec<(PeerId, FrameEncoder)>,
+    dirty_queues: FxHashSet<Obj<RpcNodeServerQueue>>,
 }
 
 component!(RpcServer);
@@ -169,43 +124,16 @@ impl Default for RpcServer {
 impl RpcServer {
     pub fn new() -> Self {
         Self {
-            kinds: Steal::default(),
             id_to_node: FxHashMap::default(),
             id_gen: RpcNodeId(NonZeroU64::new(1).unwrap()),
+            dirty_queues: FxHashSet::default(),
         }
     }
 
-    pub fn define<K: RpcKindServer>(&mut self) -> &mut Self {
-        let hash_map::Entry::Vacant(entry) = self.kinds.entry(RpcKindId::of::<K::Kind>()) else {
-            panic!(
-                "RPC kind {:?} registered more than once",
-                type_name::<K::Kind>()
-            );
-        };
-
-        entry.insert(KindData {
-            vtable: <K as HasKindVtable>::VTABLE,
-            packet_send_queue: Vec::new(),
-            now_visible: FxHashSet::default(),
-            now_invisible: FxHashSet::default(),
-            packet_replicate_queue: Vec::new(),
-            packet_de_replicate_queue: Vec::new(),
-        });
-
-        self
-    }
-
-    pub fn register(mut self: Obj<Self>, mut node: Obj<RpcNode>) -> Obj<RpcNodeServer> {
-        assert_eq!(node.opt_id(), None);
-
-        // Ensure that the node has a valid kind
-        let kind = node.kind();
-        let vtable = self
-            .kinds
-            .get(&kind)
-            .unwrap_or_else(|| panic!("RPC node with kind {:?} was never registered", kind.id()))
-            .vtable;
-
+    pub fn register_node<K: RpcKindServer>(
+        mut self: Obj<Self>,
+        node: Entity,
+    ) -> (Obj<RpcNode>, Obj<RpcNodeServer>) {
         // Generate a unique node ID
         let next_id = self
             .id_gen
@@ -214,67 +142,51 @@ impl RpcServer {
             .expect("too many nodes spawned");
 
         let node_id = mem::replace(&mut self.id_gen, RpcNodeId(next_id));
-        node.id = Some(node_id);
 
-        // Extend the node with server-specific state
-        let server_node = node.entity().add(RpcNodeServer {
-            kind: node.kind(),
-            vtable,
+        // Create the queue node
+        let queue = Entity::new(self.entity()).add(RpcNodeServerQueue {
+            server: self,
+            node_id,
+            visible_to: FxHashSet::default(),
+            action_queue: Vec::new(),
+            destroyed: false,
+            marked_dirty: false,
+        });
+
+        // Extend the node with node state
+        let generic_node = node.add(RpcNode {
+            kind: RpcKindId::of::<K::Kind>(),
+            id: node_id,
+        });
+        let server_node = node.add(RpcNodeServer {
+            kind: RpcKindId::of::<K::Kind>(),
+            vtable: <K as HasKindVtable>::VTABLE,
             node_id,
             userdata: Index::DANGLING,
             server: self,
             visible_to: FxHashSet::default(),
+            queue,
         });
 
         // Register in the ID map
         self.id_to_node.insert(node_id, server_node);
 
-        server_node
+        (generic_node, server_node)
+    }
+
+    pub fn register_peer(self: Obj<Self>, peer: Entity) -> Obj<RpcPeer> {
+        peer.add(RpcPeer {
+            server: self,
+            vis_set: FxHashSet::default(),
+            alive: true,
+        })
     }
 
     pub fn lookup_node(&self, id: RpcNodeId) -> Option<Obj<RpcNodeServer>> {
         self.id_to_node.get(&id).copied()
     }
 
-    pub fn replicate(mut self: Obj<Self>, node: Obj<RpcNodeServer>, peer: PeerId) {
-        let kind = self.kinds.get_mut(&node.kind).unwrap();
-
-        kind.now_invisible.remove(&(node, peer));
-
-        if !node.is_visible_to(peer) {
-            kind.now_visible.insert((node, peer));
-        }
-    }
-
-    pub fn de_replicate(mut self: Obj<Self>, node: Obj<RpcNodeServer>, peer: PeerId) {
-        let kind = self.kinds.get_mut(&node.kind).unwrap();
-
-        kind.now_visible.remove(&(node, peer));
-
-        if node.is_visible_to(peer) {
-            kind.now_invisible.insert((node, peer));
-        }
-    }
-
-    pub fn send_packet<K: RpcKind>(
-        mut self: Obj<Self>,
-        target: Obj<RpcNodeServer>,
-        packet: K::ClientBound,
-    ) {
-        assert_eq!(target.kind, RpcKindId::of::<K>());
-
-        let mut encoder = FrameEncoder::new();
-        encoder.encode_multi_part(&packet);
-        encoder.encode_multi_part(&RpcCbHeader::SendMessage(target.node_id));
-
-        self.kinds
-            .get_mut(&target.kind)
-            .unwrap()
-            .packet_send_queue
-            .push((target, encoder));
-    }
-
-    pub fn recv_packet(self: Obj<Self>, sender: PeerId, packet: Bytes) -> anyhow::Result<()> {
+    pub fn recv_packet(self: Obj<Self>, sender: Obj<RpcPeer>, packet: Bytes) -> anyhow::Result<()> {
         let mut packet = MultiPartDecoder::new(packet);
 
         let header = packet
@@ -298,39 +210,82 @@ impl RpcServer {
         (target.vtable.process_inbound)(&mut WORLD, target, sender, data)
     }
 
-    pub fn flush(self: Obj<Self>, trans: &mut impl RpcServerFlushTransport) {
-        let mut guard = steal_from_ecs(self, field!(Self, kinds));
-        let (world, kinds) = &mut *guard;
+    pub fn flush(mut self: Obj<Self>, target: &mut (impl ?Sized + RpcServerFlushTransport)) {
+        for mut queue in mem::take(&mut self.dirty_queues) {
+            queue.marked_dirty = false;
 
-        for kind in kinds.values_mut() {
-            // Process incoming packets and (de)replication requests.
-            (kind.vtable.drain_replications)(world, kind);
+            // Remove dead peers since we can't send packets to them anymore.
+            let cx = pack!(@env => Bundle<infer_bundle!('_)>);
+            queue.visible_to.retain(|&peer| {
+                let static ..cx;
+                peer.is_alive()
+            });
 
             // Send out packets
-            for (peer, packet) in kind.packet_replicate_queue.drain(..) {
-                trans.send_packet_single(world, peer, packet);
+            for action in mem::take(&mut queue.action_queue) {
+                match action {
+                    QueuedAction::ReplicateTo(peer, packet) => {
+                        if !peer.is_alive() {
+                            continue;
+                        }
+
+                        let packet = target.terminate_packet(packet);
+                        target.send_packet(&mut WORLD, peer, packet);
+
+                        queue.visible_to.insert(peer);
+                    }
+                    QueuedAction::DestroyRemotely(peer) => {
+                        if !peer.is_alive() {
+                            continue;
+                        }
+
+                        let mut encoder = FrameEncoder::new();
+                        encoder.encode_multi_part(&RpcCbHeader::DeleteNode(queue.node_id));
+
+                        let packet = target.terminate_packet(encoder);
+                        target.send_packet(&mut WORLD, peer, packet);
+
+                        queue.visible_to.remove(&peer);
+                    }
+                    QueuedAction::Broadcast(packet) => {
+                        let packet = target.terminate_packet(packet);
+
+                        // TODO: Don't clone
+                        for peer in queue.visible_to.clone() {
+                            target.send_packet(&mut WORLD, peer, packet.clone());
+                        }
+                    }
+                }
             }
 
-            for (target, packet) in kind.packet_send_queue.drain(..) {
-                trans.send_packet_multi(world, target, packet);
+            // Process queue destruction
+            if !queue.destroyed {
+                continue;
             }
 
-            for (peer, packet) in kind.packet_de_replicate_queue.drain(..) {
-                trans.send_packet_single(world, peer, packet);
+            // Encode a deletion packet
+            let mut encoder = FrameEncoder::new();
+            encoder.encode_multi_part(&RpcCbHeader::DeleteNode(queue.node_id));
+
+            // Broadcast it
+            let packet = target.terminate_packet(encoder);
+
+            for peer in mem::take(&mut queue.visible_to) {
+                target.send_packet(&mut WORLD, peer, packet.clone());
             }
+
+            // Destroy the unused queue
+            queue.entity().destroy();
         }
     }
 }
 
 pub trait RpcServerFlushTransport {
-    fn send_packet_single(&mut self, world: &mut World, target: PeerId, packet: FrameEncoder);
+    fn terminate_packet(&mut self, encoder: FrameEncoder) -> Bytes {
+        encoder.finish()
+    }
 
-    fn send_packet_multi(
-        &mut self,
-        world: &mut World,
-        target: Obj<RpcNodeServer>,
-        packet: FrameEncoder,
-    );
+    fn send_packet(&mut self, world: &mut World, target: Obj<RpcPeer>, packet: Bytes);
 }
 
 // === RpcNodeServer === //
@@ -342,7 +297,8 @@ pub struct RpcNodeServer {
     node_id: RpcNodeId,
     userdata: Index,
     server: Obj<RpcServer>,
-    visible_to: FxHashSet<PeerId>,
+    visible_to: FxHashSet<Obj<RpcPeer>>,
+    queue: Obj<RpcNodeServerQueue>,
 }
 
 component!(RpcNodeServer);
@@ -360,12 +316,68 @@ impl RpcNodeServer {
         self.server
     }
 
-    pub fn visible_to(&self) -> &FxHashSet<PeerId> {
+    pub fn visible_to(&self) -> &FxHashSet<Obj<RpcPeer>> {
         &self.visible_to
     }
 
-    pub fn is_visible_to(&self, peer: PeerId) -> bool {
+    pub fn is_visible_to(&self, peer: Obj<RpcPeer>) -> bool {
         self.visible_to.contains(&peer)
+    }
+
+    pub fn replicate(mut self: Obj<Self>, mut peer: Obj<RpcPeer>) {
+        if !self.visible_to.insert(peer) {
+            return;
+        }
+
+        peer.vis_set.insert(self);
+
+        let mut encoder = FrameEncoder::new();
+        (self.vtable.produce_catchup)(&mut WORLD, self, peer, &mut encoder);
+
+        self.queue.mark_dirty();
+        self.queue
+            .action_queue
+            .push(QueuedAction::ReplicateTo(peer, encoder));
+    }
+
+    pub fn de_replicate(mut self: Obj<Self>, mut peer: Obj<RpcPeer>) {
+        if !self.visible_to.remove(&peer) {
+            return;
+        }
+
+        peer.vis_set.remove(&self);
+
+        self.queue.mark_dirty();
+        self.queue
+            .action_queue
+            .push(QueuedAction::DestroyRemotely(peer));
+    }
+
+    pub fn broadcast<K: RpcKind>(mut self: Obj<Self>, packet: &K::ClientBound) {
+        assert_eq!(self.kind, RpcKindId::of::<K>());
+
+        let mut encoder = FrameEncoder::new();
+
+        encoder.encode_multi_part(packet);
+        encoder.encode_multi_part(&RpcCbHeader::SendMessage(self.node_id));
+
+        self.queue
+            .action_queue
+            .push(QueuedAction::Broadcast(encoder));
+    }
+
+    pub fn unregister(mut self: Obj<Self>) {
+        // Queue up remote destruction
+        self.queue.destroyed = true;
+        self.queue.mark_dirty();
+
+        // Unregister the node from the server
+        self.server.id_to_node.remove(&self.node_id);
+
+        // Update peer visibility sets
+        for mut peer in self.visible_to.drain() {
+            peer.vis_set.remove(&self);
+        }
     }
 
     fn userdata<K: RpcKindServer>(
@@ -378,5 +390,84 @@ impl RpcNodeServer {
             self.userdata = Obj::raw(self.entity().get::<K::RpcRoot>(pack!(cx)));
         }
         Obj::from_raw(self.userdata)
+    }
+}
+
+#[derive(Debug)]
+pub struct RpcNodeServerQueue {
+    server: Obj<RpcServer>,
+    node_id: RpcNodeId,
+    visible_to: FxHashSet<Obj<RpcPeer>>,
+    action_queue: Vec<QueuedAction>,
+    destroyed: bool,
+    marked_dirty: bool,
+}
+
+#[derive(Debug)]
+enum QueuedAction {
+    ReplicateTo(Obj<RpcPeer>, FrameEncoder),
+    DestroyRemotely(Obj<RpcPeer>),
+    Broadcast(FrameEncoder),
+}
+
+component!(RpcNodeServerQueue);
+
+impl RpcNodeServerQueue {
+    fn mark_dirty(mut self: Obj<Self>) {
+        if self.marked_dirty {
+            return;
+        }
+
+        self.marked_dirty = true;
+        self.server.dirty_queues.insert(self);
+    }
+}
+
+// === RpcPeer === //
+
+#[derive(Debug)]
+pub struct RpcPeer {
+    server: Obj<RpcServer>,
+    vis_set: FxHashSet<Obj<RpcNodeServer>>,
+    alive: bool,
+}
+
+component!(RpcPeer);
+
+impl RpcPeer {
+    pub fn server(&self) -> Obj<RpcServer> {
+        self.server
+    }
+
+    pub fn unregister(mut self: Obj<Self>) {
+        if !self.alive {
+            return;
+        }
+
+        self.alive = false;
+
+        for mut replicated_to in self.vis_set.drain() {
+            replicated_to.visible_to.remove(&self);
+        }
+    }
+
+    pub fn is_alive(self: Obj<Self>) -> bool {
+        Obj::is_alive(self) && self.alive
+    }
+}
+
+// === Systems === //
+
+pub fn add_server_rpc_node<K: RpcKindServer>(target: Entity) -> (Obj<RpcNode>, Obj<RpcNodeServer>) {
+    target.deep_get::<RpcServer>().register_node::<K>(target)
+}
+
+pub fn sys_flush_server_rpc() {
+    for node in query_removed::<RpcNodeServer>() {
+        node.unregister();
+    }
+
+    for peer in query_removed::<RpcPeer>() {
+        peer.unregister();
     }
 }

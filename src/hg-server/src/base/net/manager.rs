@@ -1,10 +1,10 @@
 use bytes::Bytes;
 use hg_common::base::{
     net::{
-        quic_server::QuicServerTransport, ErasedTaskGuard, FrameEncoder, PeerId,
-        ServerTransport as _, ServerTransportEvent,
+        quic_server::QuicServerTransport, ErasedTaskGuard, PeerId, ServerTransport as _,
+        ServerTransportEvent,
     },
-    rpc::{RpcNodeServer, RpcServer, RpcServerFlushTransport},
+    rpc::{RpcPeer, RpcServer, RpcServerFlushTransport},
     time::RunLoop,
 };
 use hg_ecs::{
@@ -21,7 +21,7 @@ pub struct NetManager {
     transport: QuicServerTransport,
     rpc: Obj<RpcServer>,
     sessions: FxHashMap<PeerId, Obj<NetSession>>,
-    on_join: SimpleSignal<PeerId>,
+    on_join: SimpleSignal<Obj<RpcPeer>>,
 }
 
 component!(NetManager);
@@ -36,14 +36,13 @@ impl NetManager {
         }
     }
 
-    pub fn on_join(&self) -> SimpleSignalReader<PeerId> {
+    pub fn on_join(&self) -> SimpleSignalReader<Obj<RpcPeer>> {
         self.on_join.reader()
     }
 
     pub fn process(mut self: Obj<Self>) {
         self.on_join.reset();
-
-        self.rpc.flush(&mut ServerFlushTrans(self));
+        self.rpc.flush(&mut ServerFlushTrans);
 
         while let Some(ev) = self.transport.process() {
             match ev {
@@ -54,7 +53,8 @@ impl NetManager {
                     drop(task);
                 }
                 ServerTransportEvent::Disconnected { peer, cause: _ } => {
-                    self.sessions.remove(&peer);
+                    let sess = self.sessions.remove(&peer).unwrap();
+                    sess.entity().destroy();
                 }
                 ServerTransportEvent::DataReceived { peer, packet, task } => {
                     let sess = self.sessions[&peer];
@@ -77,32 +77,17 @@ impl NetManager {
     }
 }
 
-struct ServerFlushTrans(Obj<NetManager>);
+struct ServerFlushTrans;
 
 impl RpcServerFlushTransport for ServerFlushTrans {
-    fn send_packet_single(&mut self, world: &mut World, target: PeerId, packet: FrameEncoder) {
+    fn send_packet(&mut self, world: &mut World, target: Obj<RpcPeer>, packet: Bytes) {
         bind!(world);
 
-        self.0
+        let mut target = target.entity().get::<NetSession>();
+        target
+            .manager
             .transport
-            .peer_send(target, packet.finish(), ErasedTaskGuard::noop());
-    }
-
-    fn send_packet_multi(
-        &mut self,
-        world: &mut hg_ecs::World,
-        target: Obj<RpcNodeServer>,
-        packet: FrameEncoder,
-    ) {
-        bind!(world);
-
-        let packet = packet.finish();
-
-        for &peer in target.visible_to() {
-            self.0
-                .transport
-                .peer_send(peer, packet.clone(), ErasedTaskGuard::noop());
-        }
+            .peer_send(target.peer, packet, ErasedTaskGuard::noop());
     }
 }
 
@@ -118,7 +103,7 @@ pub struct NetSession {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum SessionState {
     Login,
-    Play,
+    Play(Obj<RpcPeer>),
 }
 
 component!(NetSession);
@@ -136,11 +121,12 @@ impl NetSession {
         match self.state {
             SessionState::Login => {
                 tracing::info!("Peer {} logged in with {packet:?}", self.peer);
-                self.state = SessionState::Play;
-                self.manager.on_join.fire(self.peer);
+                let peer = self.manager.rpc.register_peer(self.entity());
+                self.manager.on_join.fire(peer);
+                self.state = SessionState::Play(peer);
                 Ok(())
             }
-            SessionState::Play => self.manager.rpc.recv_packet(self.peer, packet),
+            SessionState::Play(peer) => self.manager.rpc.recv_packet(peer, packet),
         }
     }
 }

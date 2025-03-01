@@ -64,29 +64,17 @@ impl RpcKindId {
 #[derive(Debug)]
 pub struct RpcNode {
     pub(crate) kind: RpcKindId,
-    pub(crate) id: Option<RpcNodeId>,
+    pub(crate) id: RpcNodeId,
 }
 
 component!(RpcNode);
 
 impl RpcNode {
-    pub fn new<K: RpcKind>() -> Self {
-        Self::new_raw(RpcKindId::of::<K>())
-    }
-
-    pub fn new_raw(kind: RpcKindId) -> Self {
-        Self { kind, id: None }
-    }
-
     pub fn kind(&self) -> RpcKindId {
         self.kind
     }
 
-    pub fn opt_id(&self) -> Option<RpcNodeId> {
+    pub fn id(&self) -> RpcNodeId {
         self.id
-    }
-
-    pub fn expect_id(&self) -> RpcNodeId {
-        self.id.unwrap()
     }
 }
