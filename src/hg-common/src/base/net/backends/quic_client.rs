@@ -3,37 +3,38 @@ use std::{net::SocketAddr, pin::pin, str::FromStr, sync::Arc};
 use anyhow::Context as _;
 use bytes::Bytes;
 use futures::StreamExt as _;
-use hg_common::{
-    base::net::{
-        back_pressure::{BackPressureAsync, ErasedTaskGuard},
-        codec::FrameDecoder,
-        protocol::SocketCloseReason,
-        transport::{filter_framed_read_failure, run_transport_data_handler},
-    },
-    try_async,
-    utils::lang::{absorb_result_std, catch_termination_async, worker_panic_error},
-};
-use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::codec::FramedRead;
 use tracing::{instrument, Instrument as _};
 
-// === Tidbits === //
+use crate::{
+    base::net::{
+        back_pressure::{BackPressureAsync, ErasedTaskGuard},
+        codec::FrameDecoder,
+        protocol::SocketCloseReason,
+        transport::{ClientTransport, ClientTransportEvent},
+    },
+    try_async,
+    utils::lang::{absorb_result_std, catch_termination_async, worker_panic_error},
+};
 
-#[derive(Debug, Clone, Error)]
-#[error("peer disconnected")]
-pub struct ShutdownError;
+use super::quic_shared::{filter_framed_read_failure, run_transport_data_handler};
+
+// === Transport === //
 
 #[derive(Debug)]
-pub enum TransportEvent {
-    Connected,
-    Disconnected {
-        cause: anyhow::Result<()>,
-    },
-    DataReceived {
-        packet: Bytes,
-        task: ErasedTaskGuard,
-    },
+pub struct QuicClientTransport {
+    state: Arc<TransportState>,
+    event_rx: mpsc::UnboundedReceiver<ClientTransportEvent>,
+}
+
+#[derive(Debug)]
+struct TransportState {
+    server_addr: SocketAddr,
+    server_name: String,
+    config: quinn::ClientConfig,
+    event_tx: mpsc::UnboundedSender<ClientTransportEvent>,
+    send_action_tx: mpsc::UnboundedSender<PeerSendAction>,
 }
 
 #[derive(Debug)]
@@ -45,24 +46,7 @@ enum PeerSendAction {
     Disconnect(Bytes),
 }
 
-// === Transport === //
-
-#[derive(Debug)]
-pub struct Transport {
-    state: Arc<TransportState>,
-    event_rx: mpsc::UnboundedReceiver<TransportEvent>,
-}
-
-#[derive(Debug)]
-struct TransportState {
-    server_addr: SocketAddr,
-    server_name: String,
-    config: quinn::ClientConfig,
-    event_tx: mpsc::UnboundedSender<TransportEvent>,
-    send_action_tx: mpsc::UnboundedSender<PeerSendAction>,
-}
-
-impl Transport {
+impl QuicClientTransport {
     pub fn new(config: quinn::ClientConfig, server_addr: SocketAddr, server_name: &str) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (send_action_tx, send_action_rx) = mpsc::unbounded_channel();
@@ -79,8 +63,10 @@ impl Transport {
 
         Self { state, event_rx }
     }
+}
 
-    pub fn send(&self, framed: Bytes, task_guard: ErasedTaskGuard) {
+impl ClientTransport for QuicClientTransport {
+    fn send(&mut self, framed: Bytes, task_guard: ErasedTaskGuard) {
         absorb_result_std::<_, _>("send a packet", || {
             self.state
                 .send_action_tx
@@ -88,7 +74,7 @@ impl Transport {
         });
     }
 
-    pub fn disconnect(&self, data: Bytes) {
+    fn disconnect(&mut self, data: Bytes) {
         absorb_result_std::<_, _>("disconnect", || {
             self.state
                 .send_action_tx
@@ -96,13 +82,13 @@ impl Transport {
         });
     }
 
-    pub fn process(&mut self) -> Option<TransportEvent> {
+    fn process(&mut self) -> Option<ClientTransportEvent> {
         self.event_rx.try_recv().ok()
     }
 }
 
 impl TransportState {
-    fn send_event(&self, event: TransportEvent) {
+    fn send_event(&self, event: ClientTransportEvent) {
         let _ = self.event_tx.send(event);
     }
 }
@@ -128,7 +114,7 @@ impl TransportWorker {
                 tracing::error!("client listener thread crashed:\n{err:?}");
             }
 
-            state.send_event(TransportEvent::Disconnected { cause });
+            state.send_event(ClientTransportEvent::Disconnected { cause });
         })
         .await;
     }
@@ -153,7 +139,7 @@ impl TransportWorker {
 
         tracing::info!("Connected!");
 
-        state.send_event(TransportEvent::Connected);
+        state.send_event(ClientTransportEvent::Connected);
 
         let worker = Arc::new(TransportWorker { state, conn });
 
@@ -198,7 +184,7 @@ impl TransportWorker {
             let task = ErasedTaskGuard::new(pressure.start(packet.len()));
 
             self.state
-                .send_event(TransportEvent::DataReceived { packet, task });
+                .send_event(ClientTransportEvent::DataReceived { packet, task });
 
             tokio::select! {
                 _ = pressure.wait() => {

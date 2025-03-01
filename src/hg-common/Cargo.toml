@@ -15,7 +15,7 @@ glam = "0.27.0"
 hg-ecs = { version = "0.1.0", path = "../hg-ecs" }
 hg-utils = { version = "0.1.0", path = "../hg-utils" }
 postcard = { version = "1.1.1", features = ["use-std"] }
-quinn = "0.11.6"
+quinn = { version = "0.11.6", features = ["futures-io", "rustls"] }
 rcgen = "0.13.2"
 rustls = "0.23.22"
 scopeguard = "1.2.0"

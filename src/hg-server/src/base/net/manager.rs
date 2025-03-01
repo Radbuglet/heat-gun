@@ -1,6 +1,11 @@
 use bytes::Bytes;
 use hg_common::base::{
-    net::{back_pressure::ErasedTaskGuard, codec::FrameEncoder, transport::PeerId},
+    net::{
+        back_pressure::ErasedTaskGuard,
+        backends::quic_server::QuicServerTransport,
+        codec::FrameEncoder,
+        transport::{PeerId, ServerTransport as _, ServerTransportEvent},
+    },
     rpc::{RpcKind, RpcKindServer, RpcNode, RpcNodeServer, RpcServer, RpcServerFlushTransport},
     time::RunLoop,
 };
@@ -11,13 +16,11 @@ use hg_ecs::{
 };
 use hg_utils::hash::FxHashMap;
 
-use super::{Transport, TransportEvent};
-
 // === NetManager === //
 
 #[derive(Debug)]
 pub struct NetManager {
-    transport: Transport,
+    transport: QuicServerTransport,
     rpc: Obj<RpcServer>,
     sessions: FxHashMap<PeerId, Obj<NetSession>>,
     on_join: SimpleSignal<PeerId>,
@@ -26,7 +29,7 @@ pub struct NetManager {
 component!(NetManager);
 
 impl NetManager {
-    pub fn new(me: Entity, transport: Transport) -> Obj<NetManager> {
+    pub fn new(me: Entity, transport: QuicServerTransport) -> Obj<NetManager> {
         me.add(Self {
             transport,
             rpc: Entity::new(me).add(RpcServer::new()),
@@ -66,28 +69,27 @@ impl NetManager {
 
         while let Some(ev) = self.transport.process() {
             match ev {
-                TransportEvent::Connected { peer, task } => {
+                ServerTransportEvent::Connected { peer, task } => {
                     let sess = Entity::new(self.entity()).add(NetSession::new(self, peer));
                     self.sessions.insert(sess.peer, sess);
 
                     drop(task);
                 }
-                TransportEvent::Disconnected { peer, cause: _ } => {
+                ServerTransportEvent::Disconnected { peer, cause: _ } => {
                     self.sessions.remove(&peer);
                 }
-                TransportEvent::DataReceived { peer, packet, task } => {
+                ServerTransportEvent::DataReceived { peer, packet, task } => {
                     let sess = self.sessions[&peer];
                     if let Err(err) = sess.process_recv(packet) {
                         tracing::error!("failed to process packet sent by peer {peer}: {err:?}");
 
                         self.transport
-                            .write_handle_ref()
                             .peer_kick(peer, Bytes::from_static(b"protocol error"));
                     }
 
                     drop(task);
                 }
-                TransportEvent::Shutdown { cause: _ } => {
+                ServerTransportEvent::Shutdown { cause: _ } => {
                     Entity::service::<RunLoop>().request_exit();
                 }
             }
@@ -103,11 +105,9 @@ impl RpcServerFlushTransport for ServerFlushTrans {
     fn send_packet_single(&mut self, world: &mut World, target: PeerId, packet: FrameEncoder) {
         bind!(world);
 
-        self.0.transport.write_handle_ref().peer_send(
-            target,
-            packet.finish(),
-            ErasedTaskGuard::noop(),
-        );
+        self.0
+            .transport
+            .peer_send(target, packet.finish(), ErasedTaskGuard::noop());
     }
 
     fn send_packet_multi(
@@ -121,11 +121,9 @@ impl RpcServerFlushTransport for ServerFlushTrans {
         let packet = packet.finish();
 
         for &peer in target.visible_to() {
-            self.0.transport.write_handle_ref().peer_send(
-                peer,
-                packet.clone(),
-                ErasedTaskGuard::noop(),
-            );
+            self.0
+                .transport
+                .peer_send(peer, packet.clone(), ErasedTaskGuard::noop());
         }
     }
 }

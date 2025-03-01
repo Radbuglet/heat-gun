@@ -1,12 +1,9 @@
-use std::{fmt, io, num::NonZeroU64, pin::pin};
+use std::{fmt, net::SocketAddr, num::NonZeroU64};
 
-use anyhow::Context as _;
-use futures::FutureExt as _;
-use tokio::task;
+use bytes::Bytes;
+use thiserror::Error;
 
-use crate::utils::lang::{flatten_tokio_join_result, FusedFuture, MultiError};
-
-use super::protocol::SocketCloseReason;
+use super::back_pressure::ErasedTaskGuard;
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct PeerId(pub NonZeroU64);
@@ -17,84 +14,62 @@ impl fmt::Display for PeerId {
     }
 }
 
-pub async fn run_transport_data_handler(
-    conn: quinn::Connection,
-    rx_task: task::JoinHandle<anyhow::Result<()>>,
-    tx_task: task::JoinHandle<anyhow::Result<()>>,
-) -> Result<(), MultiError> {
-    // Spawn two tasks to handle the read and write sides of this connection separately.
-    let rx_task =
-        pin!(rx_task.map(|v| flatten_tokio_join_result(v).context("receiver task crashed")));
+#[derive(Debug, Clone, Error)]
+#[error("peer disconnected")]
+pub struct ShutdownError;
 
-    let tx_task =
-        pin!(tx_task.map(|v| flatten_tokio_join_result(v).context("transmission task crashed")));
+#[derive(Debug, Clone, Error)]
+#[error("peer disconnected")]
+pub struct PeerDisconnectError;
 
-    let mut rx_task = FusedFuture::new(rx_task);
-    let mut tx_task = FusedFuture::new(tx_task);
-
-    let first = tokio::select! {
-        first = rx_task.wait() => first.unwrap(),
-        first = tx_task.wait() => first.unwrap(),
-    };
-
-    // Ensure that the other side also terminates
-    if first.is_err() {
-        // If `res` was not erroneous, we know the first task to finish must have encountered
-        // a socket EOF, which occurs on both sides of the connection. Hence, there is no need
-        // to do anything to stop the other task.
-
-        // If it was erroneous, we need to close the socket ourselves.
-        conn.close(SocketCloseReason::Crash.code().into(), &[]);
-    }
-
-    // Ensure that the other side terminates before cleaning up the task.
-    let (lhs, rhs) = tokio::join!(rx_task.wait(), tx_task.wait());
-    let second = lhs.or(rhs).unwrap();
-
-    // Parse the connection error.
-    let third = {
-        use quinn::ConnectionError::*;
-
-        let err = conn.close_reason().unwrap();
-        #[rustfmt::skip]
-        let is_err = match err {
-            VersionMismatch
-            | TransportError(_)
-            | ConnectionClosed(_)
-            | Reset
-            | TimedOut
-            | CidsExhausted => true,
-            ApplicationClosed(_) | LocallyClosed => false,
-        };
-
-        if is_err {
-            Err(anyhow::Error::new(err).context("error ocurred in connection"))
-        } else {
-            Ok(())
-        }
-    };
-
-    MultiError::from_iter([first, second, third])
+#[derive(Debug)]
+pub enum ClientTransportEvent {
+    Connected,
+    Disconnected {
+        cause: anyhow::Result<()>,
+    },
+    DataReceived {
+        packet: Bytes,
+        task: ErasedTaskGuard,
+    },
 }
 
-pub fn filter_framed_read_failure(e: anyhow::Error) -> anyhow::Result<()> {
-    use quinn::ReadError::*;
+#[derive(Debug)]
+pub enum ServerTransportEvent {
+    Connected {
+        peer: PeerId,
+        task: ErasedTaskGuard,
+    },
+    Disconnected {
+        peer: PeerId,
+        cause: anyhow::Result<()>,
+    },
+    DataReceived {
+        peer: PeerId,
+        packet: Bytes,
+        task: ErasedTaskGuard,
+    },
+    Shutdown {
+        cause: anyhow::Result<()>,
+    },
+}
 
-    return match e
-        .downcast_ref::<io::Error>()
-        .and_then(|v| v.get_ref())
-        .and_then(|v| v.downcast_ref::<quinn::ReadError>())
-    {
-        Some(e) => match e {
-            // These will already be reported by `self.conn.close_reason()`.
-            Reset(_) | ConnectionLost(_) => Ok(()),
+pub trait ClientTransport: fmt::Debug {
+    fn process(&mut self) -> Option<ClientTransportEvent>;
 
-            // Basically an EOF.
-            ClosedStream => Ok(()),
+    fn send(&mut self, framed: Bytes, task_guard: ErasedTaskGuard);
 
-            // We don't use these features.
-            IllegalOrderedRead | ZeroRttRejected => unreachable!(),
-        },
-        None => Err(e),
-    };
+    fn disconnect(&mut self, data: Bytes);
+}
+
+pub trait ServerTransport: fmt::Debug {
+    fn process(&mut self) -> Option<ServerTransportEvent>;
+
+    fn peer_remote_addr(&mut self, id: PeerId) -> Result<SocketAddr, PeerDisconnectError>;
+
+    fn peer_alive(&mut self, id: PeerId) -> bool;
+
+    fn peer_send(&mut self, id: PeerId, framed: Bytes, task_guard: ErasedTaskGuard);
+
+    fn peer_kick(&mut self, id: PeerId, data: Bytes);
 }

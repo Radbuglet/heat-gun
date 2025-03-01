@@ -3,17 +3,21 @@ use std::{net::SocketAddr, str::FromStr, sync::Arc};
 use anyhow::Context;
 use bytes::Bytes;
 use hg_common::base::{
-    net::{back_pressure::ErasedTaskGuard, codec::FrameEncoder, dev_cert::fetch_dev_pub_cert},
+    net::{
+        back_pressure::ErasedTaskGuard,
+        backends::quic_client::QuicClientTransport,
+        codec::FrameEncoder,
+        dev_cert::fetch_dev_pub_cert,
+        transport::{ClientTransport as _, ClientTransportEvent},
+    },
     rpc::{RpcClient, RpcKind, RpcKindClient, RpcNodeClient},
 };
 use hg_ecs::{component, Entity, Obj};
 use quinn::crypto::rustls::QuicClientConfig;
 
-use super::{Transport, TransportEvent};
-
 #[derive(Debug)]
 pub struct NetManager {
-    transport: Transport,
+    transport: QuicClientTransport,
     rpc: Obj<RpcClient>,
 }
 
@@ -30,7 +34,7 @@ impl NetManager {
         let config = Arc::new(QuicClientConfig::try_from(config)?);
         let config = quinn::ClientConfig::new(config);
 
-        let transport = Transport::new(
+        let transport = QuicClientTransport::new(
             config,
             SocketAddr::from_str("127.0.0.1:8080").unwrap(),
             "localhost",
@@ -47,7 +51,7 @@ impl NetManager {
         self.rpc.define::<K>();
     }
 
-    pub fn send<K: RpcKind>(self: Obj<Self>, target: Obj<RpcNodeClient>, data: K::ServerBound) {
+    pub fn send<K: RpcKind>(mut self: Obj<Self>, target: Obj<RpcNodeClient>, data: K::ServerBound) {
         let packet = self.rpc.send_packet::<K>(target, data);
         self.transport
             .send(packet.finish(), ErasedTaskGuard::noop());
@@ -56,15 +60,15 @@ impl NetManager {
     pub fn process(mut self: Obj<Self>) {
         while let Some(ev) = self.transport.process() {
             match ev {
-                TransportEvent::Connected => {
+                ClientTransportEvent::Connected => {
                     // Send login packet
                     let mut encoder = FrameEncoder::new();
                     encoder.extend_from_slice(b"I want to log in, please!");
                     self.transport
                         .send(encoder.finish(), ErasedTaskGuard::noop());
                 }
-                TransportEvent::Disconnected { cause } => todo!(),
-                TransportEvent::DataReceived { packet, task } => {
+                ClientTransportEvent::Disconnected { cause } => todo!(),
+                ClientTransportEvent::DataReceived { packet, task } => {
                     if let Err(err) = self.rpc.recv_packet(packet) {
                         tracing::error!("failed to process client-bound packet: {err:?}");
                         self.transport.disconnect(Bytes::new());

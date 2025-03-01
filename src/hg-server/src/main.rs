@@ -4,9 +4,10 @@
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
 
 use anyhow::Context;
-use base::net::Transport;
 use driver::{world_init, world_main_loop};
-use hg_common::base::net::dev_cert::generate_dev_priv_key;
+use hg_common::base::net::{
+    backends::quic_server::QuicServerTransport, dev_cert::generate_dev_priv_key,
+};
 use hg_ecs::World;
 use quinn::crypto::rustls::QuicServerConfig;
 use tracing::level_filters::LevelFilter;
@@ -47,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     // Setup server
     let bind_addr = SocketAddr::from_str("127.0.0.1:8080").unwrap();
     let config = quinn::ServerConfig::with_crypto(crypto);
-    let transport = Transport::new(config, bind_addr);
+    let transport = QuicServerTransport::new(config, bind_addr);
 
     // Create world
     let mut world = World::new();

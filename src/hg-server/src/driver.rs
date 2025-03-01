@@ -1,17 +1,18 @@
 use std::context::{infer_bundle, Bundle};
 
 use hg_common::base::{
+    net::backends::quic_server::QuicServerTransport,
     rpc::RpcNodeServer,
     time::{tps_to_dt, RunLoop},
 };
 use hg_ecs::{bind, Entity, Obj, Query, World};
 
 use crate::{
-    base::net::{NetManager, Transport},
+    base::net::NetManager,
     game::player::{spawn_player, PlayerRpcKindServer},
 };
 
-pub fn world_init(world: &mut World, transport: Transport) {
+pub fn world_init(world: &mut World, transport: QuicServerTransport) {
     bind!(world);
 
     // Setup engine root

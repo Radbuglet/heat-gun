@@ -11,48 +11,32 @@ use std::{
 use anyhow::Context as _;
 use bytes::Bytes;
 use futures::StreamExt as _;
-use hg_common::{
+use hg_utils::hash::FxHashMap;
+use tokio::sync::mpsc;
+use tokio_util::codec::FramedRead;
+use tracing::{instrument, Instrument};
+
+use crate::{
     base::net::{
         back_pressure::{BackPressureAsync, ErasedTaskGuard},
         codec::FrameDecoder,
         protocol::SocketCloseReason,
-        transport::{filter_framed_read_failure, run_transport_data_handler, PeerId},
+        transport::{PeerDisconnectError, PeerId, ServerTransport, ServerTransportEvent},
     },
     utils::lang::{
         absorb_result_anyhow, absorb_result_std, catch_termination_async, worker_panic_error,
         MultiError, MultiResult,
     },
 };
-use hg_utils::hash::FxHashMap;
-use thiserror::Error;
-use tokio::sync::mpsc;
-use tokio_util::codec::FramedRead;
-use tracing::{instrument, Instrument};
 
-// === Tidbits === //
+use super::quic_shared::{filter_framed_read_failure, run_transport_data_handler};
 
-#[derive(Debug, Clone, Error)]
-#[error("peer disconnected")]
-pub struct PeerDisconnectError;
+// === Transport === //
 
 #[derive(Debug)]
-pub enum TransportEvent {
-    Connected {
-        peer: PeerId,
-        task: ErasedTaskGuard,
-    },
-    Disconnected {
-        peer: PeerId,
-        cause: anyhow::Result<()>,
-    },
-    DataReceived {
-        peer: PeerId,
-        packet: Bytes,
-        task: ErasedTaskGuard,
-    },
-    Shutdown {
-        cause: anyhow::Result<()>,
-    },
+pub struct QuicServerTransport {
+    listen_state: Arc<TransportListenState>,
+    event_rx: mpsc::UnboundedReceiver<ServerTransportEvent>,
 }
 
 #[derive(Debug)]
@@ -64,17 +48,9 @@ enum PeerSendAction {
     Disconnect(Bytes),
 }
 
-// === Transport === //
-
-#[derive(Debug)]
-pub struct Transport {
-    write_handle: TransportWriteHandle,
-    event_rx: mpsc::UnboundedReceiver<TransportEvent>,
-}
-
 #[derive(Debug)]
 struct TransportListenState {
-    event_tx: mpsc::UnboundedSender<TransportEvent>,
+    event_tx: mpsc::UnboundedSender<ServerTransportEvent>,
     peer_map: Mutex<FxHashMap<PeerId, Arc<TransportPeerState>>>,
 }
 
@@ -86,7 +62,7 @@ struct TransportPeerState {
     kicked: AtomicBool,
 }
 
-impl Transport {
+impl QuicServerTransport {
     pub fn new(config: quinn::ServerConfig, bind_addr: SocketAddr) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
 
@@ -103,17 +79,30 @@ impl Transport {
         tokio::spawn(listen_worker.run_listen(config, bind_addr));
 
         Self {
-            write_handle: TransportWriteHandle { listen_state },
+            listen_state,
             event_rx,
         }
     }
 
-    pub fn process(&mut self) -> Option<TransportEvent> {
+    fn peer(&self, id: PeerId) -> Result<Arc<TransportPeerState>, PeerDisconnectError> {
+        self.listen_state
+            .peer_map
+            .lock()
+            .unwrap()
+            .get(&id)
+            .cloned()
+            .filter(|v| !v.kicked.load(Relaxed))
+            .ok_or(PeerDisconnectError)
+    }
+}
+
+impl ServerTransport for QuicServerTransport {
+    fn process(&mut self) -> Option<ServerTransportEvent> {
         while let Some(ev) = self.event_rx.try_recv().ok() {
             if matches!(
                 ev,
-                TransportEvent::DataReceived { peer, .. }
-                    if !self.write_handle_ref().peer_alive(peer),
+                ServerTransportEvent::DataReceived { peer, .. }
+                    if !self.peer_alive(peer),
             ) {
                 // (drop incoming packet from kicked peer)
                 continue;
@@ -125,47 +114,15 @@ impl Transport {
         None
     }
 
-    pub fn write_handle_ref(&self) -> &TransportWriteHandle {
-        &self.write_handle
-    }
-
-    pub fn write_handle(&self) -> TransportWriteHandle {
-        self.write_handle.clone()
-    }
-}
-
-impl TransportListenState {
-    fn send_event(&self, event: TransportEvent) {
-        let _ = self.event_tx.send(event);
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct TransportWriteHandle {
-    listen_state: Arc<TransportListenState>,
-}
-
-impl TransportWriteHandle {
-    fn peer(&self, id: PeerId) -> Result<Arc<TransportPeerState>, PeerDisconnectError> {
-        self.listen_state
-            .peer_map
-            .lock()
-            .unwrap()
-            .get(&id)
-            .cloned()
-            .filter(|v| !v.kicked.load(Relaxed))
-            .ok_or(PeerDisconnectError)
-    }
-
-    pub fn peer_remote_addr(&self, id: PeerId) -> Result<SocketAddr, PeerDisconnectError> {
+    fn peer_remote_addr(&mut self, id: PeerId) -> Result<SocketAddr, PeerDisconnectError> {
         self.peer(id).map(|peer| peer.remote_addr)
     }
 
-    pub fn peer_alive(&self, id: PeerId) -> bool {
+    fn peer_alive(&mut self, id: PeerId) -> bool {
         self.peer(id).is_ok()
     }
 
-    pub fn peer_send(&self, id: PeerId, framed: Bytes, task_guard: ErasedTaskGuard) {
+    fn peer_send(&mut self, id: PeerId, framed: Bytes, task_guard: ErasedTaskGuard) {
         absorb_result_std::<_, PeerDisconnectError>("send a packet", || {
             self.peer(id)?
                 .send_action_tx
@@ -176,7 +133,7 @@ impl TransportWriteHandle {
         });
     }
 
-    pub fn peer_kick(&self, id: PeerId, data: Bytes) {
+    fn peer_kick(&mut self, id: PeerId, data: Bytes) {
         absorb_result_anyhow("kick a peer", || {
             let peer = self.peer(id)?;
 
@@ -192,6 +149,12 @@ impl TransportWriteHandle {
 
             Ok(())
         });
+    }
+}
+
+impl TransportListenState {
+    fn send_event(&self, event: ServerTransportEvent) {
+        let _ = self.event_tx.send(event);
     }
 }
 
@@ -215,7 +178,7 @@ impl TransportListenWorker {
                 tracing::error!("server listener task crashed:\n{err:?}");
             }
 
-            listen_state.send_event(TransportEvent::Shutdown { cause });
+            listen_state.send_event(ServerTransportEvent::Shutdown { cause });
         })
         .await;
     }
@@ -309,10 +272,11 @@ impl TransportPeerWorker {
                     .unwrap()
                     .remove(&self.peer_state.peer_id);
 
-                self.listen_state.send_event(TransportEvent::Disconnected {
-                    peer: self.peer_state.peer_id,
-                    cause: cause.map_err(Into::into),
-                });
+                self.listen_state
+                    .send_event(ServerTransportEvent::Disconnected {
+                        peer: self.peer_state.peer_id,
+                        cause: cause.map_err(Into::into),
+                    });
             },
         )
         .await;
@@ -324,10 +288,11 @@ impl TransportPeerWorker {
         send_action_rx: mpsc::UnboundedReceiver<PeerSendAction>,
     ) -> MultiResult<()> {
         // Send connection event.
-        self.listen_state.send_event(TransportEvent::Connected {
-            peer: self.peer_state.peer_id,
-            task: accept_task,
-        });
+        self.listen_state
+            .send_event(ServerTransportEvent::Connected {
+                peer: self.peer_state.peer_id,
+                task: accept_task,
+            });
 
         // We ask the user to send the initial packet.
         let (tx, rx) = self
@@ -371,11 +336,12 @@ impl TransportPeerWorker {
 
             let task = ErasedTaskGuard::new(pressure.start(packet.len()));
 
-            self.listen_state.send_event(TransportEvent::DataReceived {
-                peer: self.peer_state.peer_id,
-                packet,
-                task,
-            });
+            self.listen_state
+                .send_event(ServerTransportEvent::DataReceived {
+                    peer: self.peer_state.peer_id,
+                    packet,
+                    task,
+                });
 
             tokio::select! {
                 _ = pressure.wait() => {
