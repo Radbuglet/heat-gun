@@ -27,28 +27,41 @@ pub struct PlayerRpcKindClient;
 impl RpcKindClient for PlayerRpcKindClient {
     type Kind = PlayerRpcKind;
     type Cx<'a> = infer_bundle!('a);
-    type RpcRoot = PlayerController;
+    type RpcRoot = Pos;
 
     fn create(
         cx: Bundle<Self::Cx<'_>>,
         client: Obj<RpcClient>,
-        id: RpcNodeId,
+        _id: RpcNodeId,
         packet: RpcClientCup<Self>,
     ) -> anyhow::Result<Obj<Self::RpcRoot>> {
-        dbg!(id, packet);
-        anyhow::bail!("Not implemented");
+        let static ..cx;
+
+        let me = Entity::new(client.entity());
+
+        let pos = me.add(Pos(packet.pos));
+        me.add(SolidRenderer::new_centered(RgbaColor::RED, 50.));
+
+        dbg!(me.debug());
+
+        Ok(pos)
     }
 
     fn destroy(cx: Bundle<Self::Cx<'_>>, target: Obj<Self::RpcRoot>) -> anyhow::Result<()> {
-        anyhow::bail!("Not implemented");
+        let static ..cx;
+        dbg!(target.debug());
+        target.entity().destroy();
+        Ok(())
     }
 
     fn process(
         cx: Bundle<Self::Cx<'_>>,
-        target: Obj<Self::RpcRoot>,
+        _target: Obj<Self::RpcRoot>,
         packet: RpcClientCb<Self>,
     ) -> anyhow::Result<()> {
-        anyhow::bail!("Not implemented");
+        let static ..cx;
+
+        match packet {}
     }
 }
 

@@ -1,3 +1,4 @@
+use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::base::rpc::RpcKind;
@@ -7,6 +8,7 @@ use crate::base::rpc::RpcKind;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerRpcCatchup {
     pub name: String,
+    pub pos: Vec2,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

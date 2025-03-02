@@ -1,14 +1,14 @@
 use std::{slice, sync::Arc};
 
-// === SimpleSignal === //
+// === DeferSignal === //
 
 #[derive(Debug)]
-pub struct SimpleSignal<E> {
+pub struct DeferSignal<E> {
     events: Arc<Vec<E>>,
     locked: bool,
 }
 
-impl<E> Default for SimpleSignal<E> {
+impl<E> Default for DeferSignal<E> {
     fn default() -> Self {
         Self {
             events: Arc::default(),
@@ -17,7 +17,7 @@ impl<E> Default for SimpleSignal<E> {
     }
 }
 
-impl<E> SimpleSignal<E> {
+impl<E> DeferSignal<E> {
     pub fn new() -> Self {
         Self::default()
     }
@@ -41,10 +41,10 @@ impl<E> SimpleSignal<E> {
         self.locked = true;
     }
 
-    pub fn reader(&self) -> SimpleSignalReader<E> {
+    pub fn reader(&self) -> DeferSignalReader<E> {
         assert!(self.locked, "cannot iterate over an unlocked signal");
 
-        SimpleSignalReader {
+        DeferSignalReader {
             events: self.events.clone(),
         }
     }
@@ -56,7 +56,7 @@ impl<E> SimpleSignal<E> {
     }
 }
 
-impl<'a, E> IntoIterator for &'a SimpleSignal<E> {
+impl<'a, E> IntoIterator for &'a DeferSignal<E> {
     type Item = &'a E;
     type IntoIter = slice::Iter<'a, E>;
 
@@ -66,17 +66,18 @@ impl<'a, E> IntoIterator for &'a SimpleSignal<E> {
 }
 
 #[derive(Debug, Clone)]
-pub struct SimpleSignalReader<E> {
+#[must_use]
+pub struct DeferSignalReader<E> {
     events: Arc<Vec<E>>,
 }
 
-impl<E> SimpleSignalReader<E> {
+impl<E> DeferSignalReader<E> {
     pub fn iter(&self) -> slice::Iter<'_, E> {
         self.events.iter()
     }
 }
 
-impl<'a, E> IntoIterator for &'a SimpleSignalReader<E> {
+impl<'a, E> IntoIterator for &'a DeferSignalReader<E> {
     type Item = &'a E;
     type IntoIter = slice::Iter<'a, E>;
 

@@ -4,21 +4,19 @@ use hg_common::base::{
     rpc::{sys_flush_rpc_groups, sys_flush_rpc_server, RpcGroup, RpcServer},
     time::{tps_to_dt, RunLoop},
 };
-use hg_ecs::{bind, Entity, World};
+use hg_ecs::{bind, Entity, Obj, World};
 
-use crate::game::player::spawn_player;
+use crate::game::player::{spawn_player, PlayerOwner};
 
 pub fn world_init(world: &mut World, transport: QuicServerTransport) {
     bind!(world);
 
-    // Setup engine root
     let rpc = Entity::root().add(RpcServer::new());
-    let group = Entity::root().add(RpcGroup::new());
-    Entity::root().add(MpServer::new(Box::new(transport), rpc, group));
-    Entity::root().add(RunLoop::new(tps_to_dt(60.)));
 
-    // Spawn a player
-    spawn_player(Entity::root());
+    Entity::root()
+        .with(RpcGroup::new())
+        .with(MpServer::new(Box::new(transport), rpc))
+        .with(RunLoop::new(tps_to_dt(60.)));
 }
 
 pub fn world_main_loop(world: &mut World) {
@@ -44,7 +42,31 @@ pub fn world_main_loop(world: &mut World) {
 }
 
 fn world_tick() {
-    Entity::service::<MpServer>().process();
+    let group = Entity::service::<RpcGroup>();
+    let mp = Entity::service::<MpServer>();
+    mp.process();
+
+    for &sess in &mp.on_join() {
+        let mut owner = sess.entity().add(PlayerOwner {
+            peer: sess.peer(),
+            sess,
+            player: Obj::DANGLING,
+        });
+        let player = spawn_player(Entity::root(), owner);
+        owner.player = player.get();
+    }
+
+    for &sess in &mp.on_join() {
+        group.add_peer(sess.peer());
+    }
+
+    for &sess in &mp.on_quit() {
+        PlayerOwner::downcast(sess.peer()).player.entity().destroy();
+    }
+
+    for &sess in &mp.on_quit() {
+        group.remove_peer(sess.peer());
+    }
 }
 
 fn world_flush() {
