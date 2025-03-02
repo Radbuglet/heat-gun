@@ -1,7 +1,7 @@
 use std::context::{infer_bundle, Bundle};
 
 use hg_common::{
-    base::rpc::{add_server_rpc_node, RpcKindServer, RpcPeer, RpcServerCup, RpcServerSb},
+    base::rpc::{add_server_rpc_node, RpcGroup, RpcKindServer, RpcPeer, RpcServerCup, RpcServerSb},
     game::player::{PlayerRpcCatchup, PlayerRpcKind},
 };
 use hg_ecs::{component, Entity, Obj};
@@ -55,7 +55,8 @@ pub fn spawn_player(parent: Entity) -> Entity {
         name: "player_mc_playerface".to_string(),
     });
 
-    add_server_rpc_node::<PlayerRpcKindServer>(player);
+    let rpc = add_server_rpc_node::<PlayerRpcKindServer>(player);
+    parent.deep_get::<RpcGroup>().add_node(rpc);
 
     player
 }

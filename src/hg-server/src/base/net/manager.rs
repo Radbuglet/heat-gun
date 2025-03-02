@@ -4,14 +4,10 @@ use hg_common::base::{
         quic_server::QuicServerTransport, ErasedTaskGuard, PeerId, ServerTransport as _,
         ServerTransportEvent,
     },
-    rpc::{RpcPeer, RpcServer, RpcServerFlushTransport},
+    rpc::{RpcGroup, RpcPeer, RpcServer, RpcServerFlushTransport},
     time::RunLoop,
 };
-use hg_ecs::{
-    bind, component,
-    signal::{SimpleSignal, SimpleSignalReader},
-    Entity, Obj, World,
-};
+use hg_ecs::{bind, component, Entity, Obj, World};
 use hg_utils::hash::FxHashMap;
 
 // === NetManager === //
@@ -21,27 +17,29 @@ pub struct NetManager {
     transport: QuicServerTransport,
     rpc: Obj<RpcServer>,
     sessions: FxHashMap<PeerId, Obj<NetSession>>,
-    on_join: SimpleSignal<Obj<RpcPeer>>,
+    group: Obj<RpcGroup>,
 }
 
 component!(NetManager);
 
 impl NetManager {
-    pub fn new(transport: QuicServerTransport, rpc: Obj<RpcServer>) -> Self {
-        Self {
+    pub fn attach(me: Entity, transport: QuicServerTransport) -> Obj<Self> {
+        let rpc = me.add(RpcServer::new());
+        let group = me.add(RpcGroup::new());
+
+        me.add(Self {
             transport,
             rpc,
             sessions: FxHashMap::default(),
-            on_join: SimpleSignal::new(),
-        }
+            group,
+        })
     }
 
-    pub fn on_join(&self) -> SimpleSignalReader<Obj<RpcPeer>> {
-        self.on_join.reader()
+    pub fn group(&self) -> Obj<RpcGroup> {
+        self.group
     }
 
     pub fn process(mut self: Obj<Self>) {
-        self.on_join.reset();
         self.rpc.flush(&mut ServerFlushTrans);
 
         while let Some(ev) = self.transport.process() {
@@ -54,6 +52,10 @@ impl NetManager {
                 }
                 ServerTransportEvent::Disconnected { peer, cause: _ } => {
                     let sess = self.sessions.remove(&peer).unwrap();
+                    if let SessionState::Play(peer) = sess.state {
+                        peer.disconnect();
+                        self.group.remove_peer(peer);
+                    }
                     sess.entity().destroy();
                 }
                 ServerTransportEvent::DataReceived { peer, packet, task } => {
@@ -72,8 +74,6 @@ impl NetManager {
                 }
             }
         }
-
-        self.on_join.lock();
     }
 }
 
@@ -122,7 +122,7 @@ impl NetSession {
             SessionState::Login => {
                 tracing::info!("Peer {} logged in with {packet:?}", self.peer);
                 let peer = self.manager.rpc.register_peer(self.entity());
-                self.manager.on_join.fire(peer);
+                self.manager.group.add_peer(peer);
                 self.state = SessionState::Play(peer);
                 Ok(())
             }

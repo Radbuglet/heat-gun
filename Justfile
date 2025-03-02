@@ -1,5 +1,5 @@
 s:
-    cargo run -p hg-server
+    RUST_BACKTRACE=1 cargo run -p hg-server
 
 c:
-    cargo run -p hg-client
+    RUST_BACKTRACE=1 cargo run -p hg-client

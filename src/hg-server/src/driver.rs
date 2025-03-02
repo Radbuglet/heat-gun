@@ -1,9 +1,9 @@
 use hg_common::base::{
     net::quic_server::QuicServerTransport,
-    rpc::{sys_flush_server_rpc, RpcNodeServer, RpcServer},
+    rpc::{sys_flush_rpc_groups, sys_flush_rpc_server},
     time::{tps_to_dt, RunLoop},
 };
-use hg_ecs::{bind, Entity, Obj, Query, World};
+use hg_ecs::{bind, Entity, World};
 
 use crate::{base::net::NetManager, game::player::spawn_player};
 
@@ -11,10 +11,8 @@ pub fn world_init(world: &mut World, transport: QuicServerTransport) {
     bind!(world);
 
     // Setup engine root
-    let rpc = Entity::root().add(RpcServer::new());
-    Entity::root()
-        .with(NetManager::new(transport, rpc))
-        .with(RunLoop::new(tps_to_dt(60.)));
+    NetManager::attach(Entity::root(), transport);
+    Entity::root().add(RunLoop::new(tps_to_dt(60.)));
 
     // Spawn a player
     spawn_player(Entity::root());
@@ -45,14 +43,9 @@ pub fn world_main_loop(world: &mut World) {
 fn world_tick() {
     let nm = Entity::service::<NetManager>();
     nm.process();
-
-    for &peer in &nm.on_join() {
-        for node in Query::<Obj<RpcNodeServer>>::new() {
-            node.replicate(peer);
-        }
-    }
 }
 
 fn world_flush() {
-    sys_flush_server_rpc();
+    sys_flush_rpc_server();
+    sys_flush_rpc_groups();
 }

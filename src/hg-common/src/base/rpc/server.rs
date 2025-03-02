@@ -175,7 +175,7 @@ impl RpcServer {
         peer.add(RpcPeer {
             server: self,
             vis_set: FxHashSet::default(),
-            alive: true,
+            connected: true,
         })
     }
 
@@ -215,14 +215,14 @@ impl RpcServer {
             let cx = pack!(@env => Bundle<infer_bundle!('_)>);
             queue.visible_to.retain(|&peer| {
                 let static ..cx;
-                peer.is_alive()
+                peer.is_connected()
             });
 
             // Send out packets
             for action in mem::take(&mut queue.action_queue) {
                 match action {
                     QueuedAction::ReplicateTo(peer, packet) => {
-                        if !peer.is_alive() {
+                        if !peer.is_connected() {
                             continue;
                         }
 
@@ -232,7 +232,7 @@ impl RpcServer {
                         queue.visible_to.insert(peer);
                     }
                     QueuedAction::DestroyRemotely(peer) => {
-                        if !peer.is_alive() {
+                        if !peer.is_connected() {
                             continue;
                         }
 
@@ -318,6 +318,10 @@ impl RpcNodeServer {
     }
 
     pub fn replicate(mut self: Obj<Self>, mut peer: Obj<RpcPeer>) {
+        if !peer.is_connected() {
+            return;
+        }
+
         if !self.visible_to.insert(peer) {
             return;
         }
@@ -334,6 +338,10 @@ impl RpcNodeServer {
     }
 
     pub fn de_replicate(mut self: Obj<Self>, mut peer: Obj<RpcPeer>) {
+        if !peer.is_connected() {
+            return;
+        }
+
         if !self.visible_to.remove(&peer) {
             return;
         }
@@ -422,7 +430,7 @@ impl RpcNodeServerQueue {
 pub struct RpcPeer {
     server: Obj<RpcServer>,
     vis_set: FxHashSet<Obj<RpcNodeServer>>,
-    alive: bool,
+    connected: bool,
 }
 
 component!(RpcPeer);
@@ -432,20 +440,20 @@ impl RpcPeer {
         self.server
     }
 
-    pub fn unregister(mut self: Obj<Self>) {
-        if !self.alive {
+    pub fn is_connected(self: Obj<Self>) -> bool {
+        Obj::is_alive(self) && self.connected
+    }
+
+    pub fn disconnect(mut self: Obj<Self>) {
+        if !self.connected {
             return;
         }
 
-        self.alive = false;
+        self.connected = false;
 
         for mut replicated_to in self.vis_set.drain() {
             replicated_to.visible_to.remove(&self);
         }
-    }
-
-    pub fn is_alive(self: Obj<Self>) -> bool {
-        Obj::is_alive(self) && self.alive
     }
 }
 
@@ -455,12 +463,12 @@ pub fn add_server_rpc_node<K: RpcKindServer>(target: Entity) -> Obj<RpcNodeServe
     target.deep_get::<RpcServer>().register_node::<K>(target)
 }
 
-pub fn sys_flush_server_rpc() {
+pub fn sys_flush_rpc_server() {
     for node in query_removed::<RpcNodeServer>() {
         node.unregister();
     }
 
     for peer in query_removed::<RpcPeer>() {
-        peer.unregister();
+        peer.disconnect();
     }
 }
