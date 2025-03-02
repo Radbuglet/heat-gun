@@ -7,6 +7,8 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio_util::codec::Decoder;
 use varuint::{Deserializable as _, Serializable as _, Varint};
 
+use super::RpcPacket;
+
 // === Encoder === //
 
 pub struct FrameEncoder {
@@ -41,6 +43,12 @@ impl FrameEncoder {
         let header = data.split();
 
         Self { header, data }
+    }
+
+    pub fn single(packet: &impl RpcPacket) -> Bytes {
+        let mut encoder = Self::new();
+        packet.encode(&mut encoder);
+        encoder.finish()
     }
 
     pub fn finish(mut self) -> Bytes {
