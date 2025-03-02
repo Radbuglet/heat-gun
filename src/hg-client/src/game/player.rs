@@ -1,5 +1,3 @@
-use std::context::{infer_bundle, Bundle};
-
 use hg_common::{
     base::{
         collide::{
@@ -7,12 +5,12 @@ use hg_common::{
             update::ColliderFollows,
         },
         kinematic::{KinematicProps, Pos, Vel},
-        rpc::{RpcClient, RpcClientCb, RpcClientCup, RpcKindClient, RpcNodeId},
+        rpc::{RpcClient, RpcClientCb, RpcClientCup, RpcClientReplicator, RpcNodeId},
     },
     game::player::PlayerRpcKind,
     utils::math::{Aabb, RgbaColor},
 };
-use hg_ecs::{component, Entity, Obj, Query};
+use hg_ecs::{bind, component, Entity, Obj, Query, World};
 use macroquad::{
     input::{is_key_down, is_key_pressed, KeyCode},
     math::{FloatExt, Vec2},
@@ -20,52 +18,7 @@ use macroquad::{
 
 use crate::base::gfx::{bus::register_gfx, sprite::SolidRenderer};
 
-// === Rpc === //
-
-pub struct PlayerRpcKindClient;
-
-impl RpcKindClient for PlayerRpcKindClient {
-    type Kind = PlayerRpcKind;
-    type Cx<'a> = infer_bundle!('a);
-    type RpcRoot = Pos;
-
-    fn create(
-        cx: Bundle<Self::Cx<'_>>,
-        client: Obj<RpcClient>,
-        _id: RpcNodeId,
-        packet: RpcClientCup<Self>,
-    ) -> anyhow::Result<Obj<Self::RpcRoot>> {
-        let static ..cx;
-
-        let me = Entity::new(client.entity());
-
-        let pos = me.add(Pos(packet.pos));
-        me.add(SolidRenderer::new_centered(RgbaColor::RED, 50.));
-
-        dbg!(me.debug());
-
-        Ok(pos)
-    }
-
-    fn destroy(cx: Bundle<Self::Cx<'_>>, target: Obj<Self::RpcRoot>) -> anyhow::Result<()> {
-        let static ..cx;
-        dbg!(target.debug());
-        target.entity().destroy();
-        Ok(())
-    }
-
-    fn process(
-        cx: Bundle<Self::Cx<'_>>,
-        _target: Obj<Self::RpcRoot>,
-        packet: RpcClientCb<Self>,
-    ) -> anyhow::Result<()> {
-        let static ..cx;
-
-        match packet {}
-    }
-}
-
-// === Components === //
+// === PlayerController === //
 
 #[derive(Debug, Clone)]
 pub struct PlayerController {
@@ -74,6 +27,46 @@ pub struct PlayerController {
 }
 
 component!(PlayerController);
+
+// === PlayerReplicator === //
+
+#[derive(Debug)]
+pub struct PlayerReplicator {}
+
+component!(PlayerReplicator);
+
+impl RpcClientReplicator for PlayerReplicator {
+    type Kind = PlayerRpcKind;
+
+    fn create(
+        world: &mut World,
+        client: Obj<RpcClient>,
+        _id: RpcNodeId,
+        packet: RpcClientCup<Self>,
+    ) -> anyhow::Result<Obj<Self>> {
+        bind!(world);
+
+        let me = Entity::new(client.entity())
+            .with(Pos(packet.pos))
+            .with(SolidRenderer::new_centered(RgbaColor::RED, 50.));
+
+        register_gfx(me);
+
+        let state = me.add(Self {});
+
+        Ok(state)
+    }
+
+    fn process(
+        self: Obj<Self>,
+        world: &mut World,
+        packet: RpcClientCb<Self>,
+    ) -> anyhow::Result<()> {
+        bind!(world);
+
+        match packet {}
+    }
+}
 
 // === Prefabs === //
 

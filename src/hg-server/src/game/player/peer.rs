@@ -1,7 +1,7 @@
 use hg_common::base::{mp::MpServerSession, rpc::RpcPeer};
 use hg_ecs::{component, Obj};
 
-use super::PlayerStateServer;
+use super::PlayerReplicator;
 
 // === Components === //
 
@@ -9,7 +9,7 @@ use super::PlayerStateServer;
 pub struct PlayerOwner {
     pub peer: Obj<RpcPeer>,
     pub sess: Obj<MpServerSession>,
-    pub player: Obj<PlayerStateServer>,
+    pub player: Obj<PlayerReplicator>,
 }
 
 component!(PlayerOwner);

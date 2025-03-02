@@ -1,3 +1,6 @@
+use std::{net::SocketAddr, str::FromStr as _, sync::Arc};
+
+use anyhow::Context as _;
 use hg_common::{
     base::{
         collide::{
@@ -6,12 +9,17 @@ use hg_common::{
         },
         debug::{set_debug_draw, DebugDraw},
         kinematic::Pos,
+        mp::MpClient,
+        net::{fetch_dev_pub_cert, quic_client::QuicClientTransport},
+        rpc::RpcClient,
         tile::{TileConfig, TileLayer, TileLayerSet, TilePalette},
     },
+    try_sync,
     utils::math::{Aabb, AabbI, RgbaColor},
 };
 use hg_ecs::Entity;
 use macroquad::math::Vec2;
+use quinn::crypto::rustls::QuicClientConfig;
 
 use crate::base::{
     debug::debug_draw_macroquad,
@@ -23,6 +31,8 @@ use crate::base::{
     },
 };
 
+use super::player::PlayerReplicator;
+
 // === Prefabs === //
 
 pub fn spawn_level(parent: Entity) -> Entity {
@@ -31,6 +41,32 @@ pub fn spawn_level(parent: Entity) -> Entity {
         .with(DebugDraw::new(debug_draw_macroquad()));
 
     set_debug_draw(level.get());
+
+    // Setup networking
+    let mut rpc = level.add(RpcClient::new());
+    rpc.define::<PlayerReplicator>();
+
+    let transport = try_sync! {
+        let mut store = rustls::RootCertStore::empty();
+        store.add(fetch_dev_pub_cert()?.context("no dev certificate found")?)?;
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(store)
+            .with_no_client_auth();
+
+        let config = Arc::new(QuicClientConfig::try_from(config)?);
+        let config = quinn::ClientConfig::new(config);
+
+        let transport = QuicClientTransport::new(
+            config,
+            SocketAddr::from_str("127.0.0.1:8080").unwrap(),
+            "localhost",
+        );
+
+        Box::new(transport)
+    }
+    .unwrap();
+
+    level.add(MpClient::new(transport, rpc));
 
     // Setup camera
     let mut camera_selector = level.add(VirtualCameraSelector::default());

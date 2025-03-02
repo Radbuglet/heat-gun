@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use hg_ecs::{component, Obj};
+use hg_ecs::{component, Obj, Query};
 
 use crate::base::{
     net::{ClientTransport, ClientTransportEvent, ErasedTaskGuard, FrameEncoder},
@@ -41,7 +41,7 @@ impl MpClient {
                         ErasedTaskGuard::noop(),
                     );
                 }
-                ClientTransportEvent::Disconnected { cause } => todo!(),
+                ClientTransportEvent::Disconnected { cause: _ } => todo!(),
                 ClientTransportEvent::DataReceived { packet, task } => {
                     if let Err(err) = self.rpc.recv_packet(packet) {
                         tracing::error!("failed to process client-bound packet: {err:?}");
@@ -51,5 +51,13 @@ impl MpClient {
                 }
             }
         }
+    }
+}
+
+// === Systems === //
+
+pub fn sys_update_mp_clients() {
+    for client in Query::<Obj<MpClient>>::new() {
+        client.process();
     }
 }

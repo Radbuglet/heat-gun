@@ -1,73 +1,70 @@
-use std::context::{infer_bundle, Bundle};
-
 use glam::Vec2;
 use hg_common::{
     base::{
         kinematic::Pos,
         rpc::{
-            add_server_rpc_node, RpcGroup, RpcKindServer, RpcNodeServer, RpcPeer, RpcServerCup,
-            RpcServerSb,
+            register_server_rpc, RpcGroup, RpcNodeServer, RpcPeer, RpcServerCup,
+            RpcServerReplicator, RpcServerSb,
         },
     },
     game::player::{PlayerRpcCatchup, PlayerRpcKind},
 };
-use hg_ecs::{component, Entity, Obj};
+use hg_ecs::{bind, component, Entity, Obj, World};
 
 use super::PlayerOwner;
-
-// === Rpc === //
-
-pub struct PlayerRpcKindServer;
-
-impl RpcKindServer for PlayerRpcKindServer {
-    type Kind = PlayerRpcKind;
-    type Cx<'a> = infer_bundle!('a);
-    type RpcRoot = PlayerStateServer;
-
-    fn catchup(
-        cx: Bundle<Self::Cx<'_>>,
-        _peer: Obj<RpcPeer>,
-        target: Obj<Self::RpcRoot>,
-    ) -> RpcServerCup<Self> {
-        let static ..cx;
-
-        PlayerRpcCatchup {
-            name: target.owner.sess.name().to_string(),
-            pos: target.pos.0,
-        }
-    }
-
-    fn process(
-        cx: Bundle<Self::Cx<'_>>,
-        _target: Obj<Self::RpcRoot>,
-        _sender: Obj<RpcPeer>,
-        packet: RpcServerSb<Self>,
-    ) -> anyhow::Result<()> {
-        let static ..cx;
-
-        match packet {}
-    }
-}
 
 // === Components === //
 
 #[derive(Debug)]
-pub struct PlayerStateServer {
+pub struct PlayerReplicator {
     pub owner: Obj<PlayerOwner>,
     pub pos: Obj<Pos>,
     pub rpc: Obj<RpcNodeServer>,
 }
 
-component!(PlayerStateServer);
+component!(PlayerReplicator);
+
+impl RpcServerReplicator for PlayerReplicator {
+    type Kind = PlayerRpcKind;
+
+    fn catchup(self: Obj<Self>, world: &mut World, _peer: Obj<RpcPeer>) -> RpcServerCup<Self> {
+        bind!(world);
+
+        PlayerRpcCatchup {
+            name: self.owner.sess.name().to_string(),
+            pos: self.pos.0,
+        }
+    }
+
+    fn process(
+        self: Obj<Self>,
+        world: &mut World,
+        _peer: Obj<RpcPeer>,
+        packet: RpcServerSb<Self>,
+    ) -> anyhow::Result<()> {
+        bind!(world);
+
+        match packet {}
+    }
+}
 
 // === Prefabs === //
 
 pub fn spawn_player(parent: Entity, owner: Obj<PlayerOwner>) -> Entity {
     let me = Entity::new(parent);
 
-    let pos = me.add(Pos(Vec2::ZERO));
-    let rpc = add_server_rpc_node::<PlayerRpcKindServer>(me);
-    me.add(PlayerStateServer { pos, owner, rpc });
+    let pos = me.add(Pos(Vec2::new(
+        fastrand::f32() * 500.,
+        fastrand::f32() * 500.,
+    )));
+    let mut replicator = me.add(PlayerReplicator {
+        pos,
+        owner,
+        rpc: Obj::DANGLING,
+    });
+    let rpc = register_server_rpc(replicator);
+    replicator.rpc = rpc;
+
     Entity::service::<RpcGroup>().add_node(rpc);
 
     me

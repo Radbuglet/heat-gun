@@ -2,7 +2,7 @@ use bytes::Bytes;
 use hg_ecs::{
     bind, component,
     signal::{DeferSignal, DeferSignalReader},
-    Entity, Obj, World,
+    Entity, Obj, Query, World,
 };
 use hg_utils::hash::FxHashMap;
 
@@ -163,5 +163,13 @@ impl MpServerSession {
             }
             SessionState::Play { peer, .. } => self.manager.rpc.recv_packet(peer, packet),
         }
+    }
+}
+
+// === Systems === //
+
+pub fn sys_update_mp_servers() {
+    for server in Query::<Obj<MpServer>>::new() {
+        server.process();
     }
 }

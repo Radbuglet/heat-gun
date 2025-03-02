@@ -1,6 +1,6 @@
 use std::{
     any::{type_name, TypeId},
-    context::{pack, Bundle, BundleItemSetFor},
+    context::pack,
     fmt, mem,
 };
 
@@ -18,30 +18,28 @@ use super::{RpcCbHeader, RpcKind, RpcNodeId};
 
 // === RpcKind === //
 
-pub type RpcClientCup<K> = <<K as RpcKindClient>::Kind as RpcKind>::Catchup;
-pub type RpcClientCb<K> = <<K as RpcKindClient>::Kind as RpcKind>::ClientBound;
-pub type RpcClientSb<K> = <<K as RpcKindClient>::Kind as RpcKind>::ServerBound;
+pub type RpcClientCup<K> = <<K as RpcClientReplicator>::Kind as RpcKind>::Catchup;
+pub type RpcClientCb<K> = <<K as RpcClientReplicator>::Kind as RpcKind>::ClientBound;
+pub type RpcClientSb<K> = <<K as RpcClientReplicator>::Kind as RpcKind>::ServerBound;
 
-pub trait RpcKindClient: Sized + 'static {
+pub trait RpcClientReplicator: Component {
     type Kind: RpcKind;
 
-    type Cx<'a>: BundleItemSetFor<'a>;
-    type RpcRoot: Component;
-
     fn create(
-        cx: Bundle<Self::Cx<'_>>,
+        world: &mut World,
         client: Obj<RpcClient>,
         id: RpcNodeId,
         packet: RpcClientCup<Self>,
-    ) -> anyhow::Result<Obj<Self::RpcRoot>>;
+    ) -> anyhow::Result<Obj<Self>>;
 
-    fn destroy(cx: Bundle<Self::Cx<'_>>, target: Obj<Self::RpcRoot>) -> anyhow::Result<()>;
+    fn process(self: Obj<Self>, world: &mut World, packet: RpcClientCb<Self>)
+        -> anyhow::Result<()>;
 
-    fn process(
-        cx: Bundle<Self::Cx<'_>>,
-        target: Obj<Self::RpcRoot>,
-        packet: RpcClientCb<Self>,
-    ) -> anyhow::Result<()>;
+    fn destroy(self: Obj<Self>, world: &mut World) -> anyhow::Result<()> {
+        bind!(world, let cx: &AccessComp<Self>);
+        self.entity(pack!(cx)).destroy();
+        Ok(())
+    }
 }
 
 type KindVtableRef = &'static KindVtable;
@@ -62,7 +60,7 @@ trait HasKindVtable {
     const VTABLE: KindVtableRef;
 }
 
-impl<K: RpcKindClient> HasKindVtable for K {
+impl<K: RpcClientReplicator> HasKindVtable for K {
     const VTABLE: KindVtableRef = &KindVtable {
         create: |world, client, target, packet| {
             // Deserialize the packet
@@ -70,12 +68,12 @@ impl<K: RpcKindClient> HasKindVtable for K {
 
             // Create the node
             let userdata = {
-                bind!(world, let cx: _);
-                K::create(cx, client, target, packet)?
+                bind!(world);
+                K::create(&mut WORLD, client, target, packet)?
             };
 
             // Create its book-keeping components.
-            bind!(world, let cx: &AccessComp<K::RpcRoot>);
+            bind!(world, let cx: &AccessComp<K>);
             let node = userdata.entity(pack!(cx));
             let client_handle = node.add(RpcNodeClient {
                 kind: TypeId::of::<K::Kind>(),
@@ -88,27 +86,15 @@ impl<K: RpcKindClient> HasKindVtable for K {
             Ok(client_handle)
         },
         destroy: |world, target| {
-            let userdata = {
-                bind!(world, let cx: _);
-                target.userdata::<K>(cx)
-            };
-
-            bind!(world, let cx: _);
-            K::destroy(cx, userdata)
+            bind!(world);
+            let userdata = target.userdata::<K>();
+            K::destroy(userdata, &mut WORLD)
         },
         message: |world, target, packet| {
-            // Deserialize the packet
+            bind!(world);
             let packet = RpcClientCb::<K>::decode(&packet)?;
-
-            // Fetch the RPC node userdata
-            let userdata = {
-                bind!(world, let cx: _);
-                target.userdata::<K>(cx)
-            };
-
-            // Process the packet
-            bind!(world, let cx: _);
-            K::process(cx, userdata, packet)?;
+            let userdata = target.userdata::<K>();
+            K::process(userdata, &mut WORLD, packet)?;
 
             Ok(())
         },
@@ -132,7 +118,7 @@ impl RpcClient {
         Self::default()
     }
 
-    pub fn define<K: RpcKindClient>(&mut self) -> &mut Self {
+    pub fn define<K: RpcClientReplicator>(&mut self) -> &mut Self {
         let kind_id = TypeId::of::<K::Kind>();
         let hash_map::Entry::Vacant(ty_entry) = self.kinds_by_type.entry(kind_id) else {
             panic!(
@@ -251,16 +237,8 @@ impl RpcNodeClient {
         self.client
     }
 
-    pub fn userdata<K: RpcKindClient>(
-        mut self: Obj<Self>,
-        cx: Bundle<&AccessComp<K::RpcRoot>>,
-    ) -> Obj<K::RpcRoot> {
+    pub fn userdata<K: RpcClientReplicator>(self: Obj<Self>) -> Obj<K> {
         debug_assert_eq!(self.kind, TypeId::of::<K::Kind>());
-
-        if self.userdata == Index::DANGLING {
-            self.userdata = Obj::raw(self.entity().get::<K::RpcRoot>(pack!(cx)));
-        }
-
         Obj::from_raw(self.userdata)
     }
 }
