@@ -1,7 +1,7 @@
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
-use crate::base::rpc::RpcKind;
+use crate::base::rpc::{RpcKind, RpcNodeId};
 
 // === Rpc === //
 
@@ -25,4 +25,40 @@ impl RpcKind for PlayerRpcKind {
     type Catchup = PlayerRpcCatchup;
     type ServerBound = PlayerRpcSb;
     type ClientBound = PlayerRpcCb;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PlayerPuppetRpcSb {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PlayerPuppetRpcCb {
+    SetPos(Vec2),
+}
+
+pub struct PlayerPuppetRpcKind;
+
+impl RpcKind for PlayerPuppetRpcKind {
+    const ID: &'static str = "player_puppet";
+
+    type Catchup = RpcNodeId;
+    type ServerBound = PlayerPuppetRpcSb;
+    type ClientBound = PlayerPuppetRpcCb;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PlayerOwnerRpcSb {
+    SetPos(Vec2),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PlayerOwnerRpcCb {}
+
+pub struct PlayerOwnerRpcKind;
+
+impl RpcKind for PlayerOwnerRpcKind {
+    const ID: &'static str = "player_owner";
+
+    type Catchup = RpcNodeId;
+    type ServerBound = PlayerOwnerRpcSb;
+    type ClientBound = PlayerOwnerRpcCb;
 }

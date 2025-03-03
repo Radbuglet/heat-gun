@@ -5,7 +5,10 @@ use hg_common::{
             update::ColliderFollows,
         },
         kinematic::{KinematicProps, Pos, Vel},
-        rpc::{RpcClient, RpcClientCb, RpcClientCup, RpcClientReplicator, RpcNodeId},
+        rpc::{
+            RpcClientCb, RpcClientCreate, RpcClientCup, RpcClientFinished, RpcClientHandle,
+            RpcClientReplicator,
+        },
     },
     game::player::PlayerRpcKind,
     utils::math::{Aabb, RgbaColor},
@@ -31,30 +34,35 @@ component!(PlayerController);
 // === PlayerReplicator === //
 
 #[derive(Debug)]
-pub struct PlayerReplicator {}
+pub struct PlayerReplicator {
+    rpc: RpcClientHandle<PlayerRpcKind>,
+}
 
 component!(PlayerReplicator);
 
 impl RpcClientReplicator for PlayerReplicator {
     type Kind = PlayerRpcKind;
 
-    fn create(
+    fn create<'t>(
         world: &mut World,
-        client: Obj<RpcClient>,
-        _id: RpcNodeId,
+        req: RpcClientCreate<'t, Self>,
         packet: RpcClientCup<Self>,
-    ) -> anyhow::Result<Obj<Self>> {
+    ) -> anyhow::Result<RpcClientFinished<'t, Self>> {
         bind!(world);
 
-        let me = Entity::new(client.entity())
+        let me = Entity::new(req.client_ent())
             .with(Pos(packet.pos))
             .with(SolidRenderer::new_centered(RgbaColor::RED, 50.));
 
         register_gfx(me);
 
-        let state = me.add(Self {});
+        let mut state = me.add(Self {
+            rpc: RpcClientHandle::DANGLING,
+        });
+        let res = req.finish(state);
+        state.rpc = res.rpc();
 
-        Ok(state)
+        Ok(res)
     }
 
     fn process(

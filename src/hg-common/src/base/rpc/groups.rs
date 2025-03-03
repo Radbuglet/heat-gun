@@ -8,7 +8,7 @@ use crate::{
     utils::lang::{steal_from_ecs, Steal},
 };
 
-use super::{RpcNodeServer, RpcPeer};
+use super::{RpcPeer, RpcServerNode};
 
 #[derive(Debug, Default)]
 pub struct RpcGroup {
@@ -28,7 +28,7 @@ impl RpcGroup {
         Self::default()
     }
 
-    pub fn add_node(mut self: Obj<Self>, target: Obj<RpcNodeServer>) -> Obj<RpcGroupFollower> {
+    pub fn add_node(mut self: Obj<Self>, target: Obj<RpcServerNode>) -> Obj<RpcGroupFollower> {
         let follower = target.entity().add(RpcGroupFollower {
             rpc: target,
             group: self,
@@ -92,7 +92,7 @@ impl RpcGroup {
 
 #[derive(Debug)]
 pub struct RpcGroupFollower {
-    rpc: Obj<RpcNodeServer>,
+    rpc: Obj<RpcServerNode>,
     group: Obj<RpcGroup>,
 }
 

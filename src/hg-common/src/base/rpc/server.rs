@@ -1,49 +1,44 @@
 use std::{
-    any::TypeId,
+    any::{type_name, TypeId},
     borrow::Cow,
-    context::{infer_bundle, pack, Bundle},
-    fmt, mem,
+    context::{infer_bundle, pack, Bundle, DerefCx},
+    fmt,
+    marker::PhantomData,
+    mem,
     num::NonZeroU64,
 };
 
 use anyhow::Context;
 use bytes::Bytes;
+use derive_where::derive_where;
 use hg_ecs::{
-    bind, component, entity::Component, query::query_removed, AccessComp, Entity, Index, Obj,
-    World, WORLD,
+    bind, component, entity::Component, query::query_removed, AccessComp, AccessCompRef, Entity,
+    Index, Obj, World, WORLD,
 };
 use hg_utils::hash::{FxHashMap, FxHashSet};
 
-use crate::base::net::{
-    FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket as _,
-};
+use crate::base::net::{FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket};
 
 use super::{RpcCbHeader, RpcKind, RpcNodeId, RpcSbHeader};
 
 // === RpcKind === //
 
-pub type RpcServerCup<K> = <<K as RpcServerReplicator>::Kind as RpcKind>::Catchup;
-pub type RpcServerCb<K> = <<K as RpcServerReplicator>::Kind as RpcKind>::ClientBound;
-pub type RpcServerSb<K> = <<K as RpcServerReplicator>::Kind as RpcKind>::ServerBound;
-
-pub trait RpcServerReplicator: Component {
-    type Kind: RpcKind;
-
-    fn catchup(self: Obj<Self>, world: &mut World, peer: Obj<RpcPeer>) -> RpcServerCup<Self>;
+pub trait RpcServerReplicator<K: RpcKind>: Component {
+    fn catchup(self: Obj<Self>, world: &mut World, peer: Obj<RpcPeer>) -> K::Catchup;
 
     fn process(
         self: Obj<Self>,
         world: &mut World,
         peer: Obj<RpcPeer>,
-        packet: RpcServerSb<Self>,
+        packet: K::ServerBound,
     ) -> anyhow::Result<()>;
 }
 
 type KindVtableRef = &'static KindVtable;
 
 struct KindVtable {
-    produce_catchup: fn(&mut World, Obj<RpcNodeServer>, Obj<RpcPeer>, &mut FrameEncoder),
-    process_inbound: fn(&mut World, Obj<RpcNodeServer>, Obj<RpcPeer>, Bytes) -> anyhow::Result<()>,
+    produce_catchup: fn(&mut World, Obj<RpcServerNode>, Obj<RpcPeer>, &mut FrameEncoder),
+    process_inbound: fn(&mut World, Obj<RpcServerNode>, Obj<RpcPeer>, Bytes) -> anyhow::Result<()>,
 }
 
 impl fmt::Debug for KindVtable {
@@ -52,39 +47,30 @@ impl fmt::Debug for KindVtable {
     }
 }
 
-trait HasKindVtable {
+trait HasKindVtable<K: RpcKind> {
     const VTABLE: KindVtableRef;
 }
 
-impl<K: RpcServerReplicator> HasKindVtable for K {
+impl<T, K> HasKindVtable<K> for T
+where
+    T: RpcServerReplicator<K>,
+    K: RpcKind,
+{
     const VTABLE: KindVtableRef = &KindVtable {
         produce_catchup: |world, target, peer, encoder| {
             bind!(world);
 
-            // Fetch the RPC node userdata
-            let (target_id, userdata) = (target.node_id, target.userdata::<K>());
-
-            // Produce the catchup structure
-            let catchup = K::catchup(userdata, &mut WORLD, peer);
-
-            // Serialize the catchup structure
+            let (target_id, userdata) = (target.node_id, target.userdata::<T>());
+            let catchup = T::catchup(userdata, &mut WORLD, peer);
             encoder.encode_multi_part(&catchup);
-            encoder.encode_multi_part(&RpcCbHeader::CreateNode(
-                target_id,
-                Cow::Borrowed(<K::Kind as RpcKind>::ID),
-            ));
+            encoder.encode_multi_part(&RpcCbHeader::CreateNode(target_id, Cow::Borrowed(K::ID)));
         },
         process_inbound: |world, target, peer, packet| {
             bind!(world);
 
-            // Deserialize the packet
-            let packet = RpcServerSb::<K>::decode(&packet)?;
-
-            // Fetch the RPC node userdata
-            let userdata = target.userdata::<K>();
-
-            // Process the packet
-            K::process(userdata, &mut WORLD, peer, packet)?;
+            let packet = <K::ServerBound as RpcPacket>::decode(&packet)?;
+            let userdata = target.userdata::<T>();
+            T::process(userdata, &mut WORLD, peer, packet)?;
 
             Ok(())
         },
@@ -95,7 +81,7 @@ impl<K: RpcServerReplicator> HasKindVtable for K {
 
 #[derive(Debug)]
 pub struct RpcServer {
-    id_to_node: FxHashMap<RpcNodeId, Obj<RpcNodeServer>>,
+    id_to_node: FxHashMap<RpcNodeId, Obj<RpcServerNode>>,
     id_gen: RpcNodeId,
     dirty_queues: Vec<Obj<RpcNodeServerQueue>>,
 }
@@ -117,11 +103,15 @@ impl RpcServer {
         }
     }
 
-    pub fn register_node<K: RpcServerReplicator>(
+    pub fn register_node<T, K>(
         mut self: Obj<Self>,
-        node: Obj<K>,
-        cx: Bundle<&AccessComp<K>>,
-    ) -> Obj<RpcNodeServer> {
+        node: Entity,
+        userdata: Obj<T>,
+    ) -> Obj<RpcServerNode>
+    where
+        T: RpcServerReplicator<K>,
+        K: RpcKind,
+    {
         // Generate a unique node ID
         let next_id = self
             .id_gen
@@ -142,14 +132,14 @@ impl RpcServer {
         });
 
         // Extend the node with node state
-        let server_node = node.entity(pack!(cx)).add(RpcNodeServer {
-            kind: TypeId::of::<K::Kind>(),
-            vtable: <K as HasKindVtable>::VTABLE,
-            node_id,
-            userdata: Obj::raw(node),
+        let server_node = node.add(RpcServerNode {
             server: self,
+            node_id,
+            vtable: <T as HasKindVtable<K>>::VTABLE,
             visible_to: FxHashSet::default(),
             queue,
+            userdata_ty: TypeId::of::<T>(),
+            userdata: Obj::raw(userdata),
         });
 
         // Register in the ID map
@@ -166,7 +156,7 @@ impl RpcServer {
         })
     }
 
-    pub fn lookup_node(&self, id: RpcNodeId) -> Option<Obj<RpcNodeServer>> {
+    pub fn lookup_node(&self, id: RpcNodeId) -> Option<Obj<RpcServerNode>> {
         self.id_to_node.get(&id).copied()
     }
 
@@ -272,28 +262,28 @@ pub trait RpcServerFlushTransport {
     fn send_packet(&mut self, world: &mut World, target: Obj<RpcPeer>, packet: Bytes);
 }
 
-// === RpcNodeServer === //
+// === RpcServerNode === //
 
 #[derive(Debug)]
-pub struct RpcNodeServer {
-    kind: TypeId,
-    vtable: KindVtableRef,
-    node_id: RpcNodeId,
-    userdata: Index,
+pub struct RpcServerNode {
     server: Obj<RpcServer>,
+    node_id: RpcNodeId,
+    vtable: KindVtableRef,
     visible_to: FxHashSet<Obj<RpcPeer>>,
     queue: Obj<RpcNodeServerQueue>,
+    userdata_ty: TypeId,
+    userdata: Index,
 }
 
-component!(RpcNodeServer);
+component!(RpcServerNode);
 
-impl RpcNodeServer {
-    pub fn id(&self) -> RpcNodeId {
-        self.node_id
-    }
-
+impl RpcServerNode {
     pub fn server(&self) -> Obj<RpcServer> {
         self.server
+    }
+
+    pub fn id(&self) -> RpcNodeId {
+        self.node_id
     }
 
     pub fn visible_to(&self) -> &FxHashSet<Obj<RpcPeer>> {
@@ -342,7 +332,7 @@ impl RpcNodeServer {
     }
 
     pub fn broadcast<K: RpcKind>(mut self: Obj<Self>, packet: &K::ClientBound) {
-        assert_eq!(self.kind, TypeId::of::<K>());
+        assert_eq!(self.userdata_ty, TypeId::of::<K>());
 
         let mut encoder = FrameEncoder::new();
 
@@ -368,8 +358,8 @@ impl RpcNodeServer {
         }
     }
 
-    pub fn userdata<K: RpcServerReplicator>(self: Obj<Self>) -> Obj<K> {
-        debug_assert_eq!(self.kind, TypeId::of::<K::Kind>());
+    pub fn userdata<T: Component>(self: Obj<Self>) -> Obj<T> {
+        debug_assert_eq!(self.userdata_ty, TypeId::of::<T>());
         Obj::from_raw(self.userdata)
     }
 }
@@ -409,7 +399,7 @@ impl RpcNodeServerQueue {
 #[derive(Debug)]
 pub struct RpcPeer {
     server: Obj<RpcServer>,
-    vis_set: FxHashSet<Obj<RpcNodeServer>>,
+    vis_set: FxHashSet<Obj<RpcServerNode>>,
     connected: bool,
 }
 
@@ -437,20 +427,86 @@ impl RpcPeer {
     }
 }
 
+// === RpcServerHandle === //
+
+#[derive_where(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct RpcServerHandle<K> {
+    _ty: PhantomData<fn(K) -> K>,
+    raw: Obj<RpcServerNode>,
+}
+
+impl<K: RpcKind> fmt::Debug for RpcServerHandle<K> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple(&format!("RpcServerHandle<{}>", type_name::<K>()))
+            .field(&self.raw)
+            .finish()
+    }
+}
+
+impl<K: RpcKind> RpcServerHandle<K> {
+    pub const DANGLING: Self = Self::wrap(Obj::DANGLING);
+
+    pub const fn wrap(target: Obj<RpcServerNode>) -> Self {
+        Self {
+            _ty: PhantomData,
+            raw: target,
+        }
+    }
+
+    pub fn raw(self) -> Obj<RpcServerNode> {
+        self.raw
+    }
+
+    pub fn server(self) -> Obj<RpcServer> {
+        self.raw().server()
+    }
+
+    pub fn id(self) -> RpcNodeId {
+        self.raw().id()
+    }
+
+    pub fn visible_to<'a>(
+        self,
+        cx: Bundle<AccessCompRef<'a, RpcServerNode>>,
+    ) -> &'a FxHashSet<Obj<RpcPeer>> {
+        self.raw().deref_cx(cx).visible_to()
+    }
+
+    pub fn is_visible_to(self, peer: Obj<RpcPeer>) -> bool {
+        self.raw().is_visible_to(peer)
+    }
+
+    pub fn replicate(self, peer: Obj<RpcPeer>) {
+        self.raw().replicate(peer);
+    }
+
+    pub fn de_replicate(self, peer: Obj<RpcPeer>) {
+        self.raw().de_replicate(peer);
+    }
+
+    pub fn broadcast(self, packet: &K::ClientBound) {
+        self.raw().broadcast::<K>(packet);
+    }
+}
+
 // === Systems === //
 
-pub fn register_server_rpc<K>(target: Obj<K>, cx: Bundle<&AccessComp<K>>) -> Obj<RpcNodeServer>
+pub fn spawn_server_rpc<T, K>(target: Obj<T>, cx: Bundle<&AccessComp<T>>) -> RpcServerHandle<K>
 where
-    K: RpcServerReplicator,
+    T: RpcServerReplicator<K>,
+    K: RpcKind,
 {
-    target
-        .entity(pack!(cx))
+    let parent = target.entity(pack!(cx));
+    let child = Entity::new(parent);
+    let rpc = parent
         .deep_get::<RpcServer>()
-        .register_node::<K>(target, pack!(cx))
+        .register_node::<T, K>(child, target);
+
+    RpcServerHandle::wrap(rpc)
 }
 
 pub fn sys_flush_rpc_server() {
-    for node in query_removed::<RpcNodeServer>() {
+    for node in query_removed::<RpcServerNode>() {
         node.unregister();
     }
 
