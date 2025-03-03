@@ -14,6 +14,7 @@ use hg_common::{
         rpc::RpcClient,
         tile::{TileConfig, TileLayer, TileLayerSet, TilePalette},
     },
+    game::player::{PlayerOwnerRpcKind, PlayerPuppetRpcKind, PlayerRpcKind},
     try_sync,
     utils::math::{Aabb, AabbI, RgbaColor},
 };
@@ -44,7 +45,9 @@ pub fn spawn_level(parent: Entity) -> Entity {
 
     // Setup networking
     let mut rpc = level.add(RpcClient::new());
-    rpc.define::<PlayerReplicator>();
+    rpc.define::<PlayerReplicator, PlayerRpcKind>();
+    rpc.define::<PlayerReplicator, PlayerOwnerRpcKind>();
+    rpc.define::<PlayerReplicator, PlayerPuppetRpcKind>();
 
     let transport = try_sync! {
         let mut store = rustls::RootCertStore::empty();

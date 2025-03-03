@@ -14,7 +14,7 @@ use hg_utils::hash::{hash_map, FxHashMap};
 use thiserror::Error;
 
 use crate::base::{
-    net::{FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket as _},
+    net::{FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket},
     rpc::RpcSbHeader,
 };
 
@@ -22,27 +22,16 @@ use super::{RpcCbHeader, RpcKind, RpcNodeId};
 
 // === RpcKind === //
 
-pub type RpcClientCup<K> = <<K as RpcClientReplicator>::Kind as RpcKind>::Catchup;
-pub type RpcClientCb<K> = <<K as RpcClientReplicator>::Kind as RpcKind>::ClientBound;
-pub type RpcClientSb<K> = <<K as RpcClientReplicator>::Kind as RpcKind>::ServerBound;
-
-pub trait RpcClientReplicator: Component {
-    type Kind: RpcKind;
-
-    fn create<'t>(
+pub trait RpcClientReplicator<K: RpcKind>: Component {
+    fn create(
         world: &mut World,
-        me: RpcClientHandle<Self::Kind>,
-        packet: RpcClientCup<Self>,
+        rpc: RpcClientHandle<K>,
+        packet: K::Catchup,
     ) -> anyhow::Result<Obj<Self>>;
 
-    fn process(self: Obj<Self>, world: &mut World, packet: RpcClientCb<Self>)
-        -> anyhow::Result<()>;
+    fn process(self: Obj<Self>, world: &mut World, packet: K::ClientBound) -> anyhow::Result<()>;
 
-    fn destroy(self: Obj<Self>, world: &mut World) -> anyhow::Result<()> {
-        bind!(world, let cx: &AccessComp<Self>);
-        self.entity(pack!(cx)).destroy();
-        Ok(())
-    }
+    fn destroy(self: Obj<Self>, world: &mut World) -> anyhow::Result<()>;
 }
 
 type KindVtableRef = &'static KindVtable;
@@ -59,13 +48,14 @@ impl fmt::Debug for KindVtable {
     }
 }
 
-trait HasKindVtable {
+trait HasKindVtable<K: RpcKind> {
     const VTABLE: KindVtableRef;
 }
 
-impl<T> HasKindVtable for T
+impl<T, K> HasKindVtable<K> for T
 where
-    T: RpcClientReplicator,
+    T: RpcClientReplicator<K>,
+    K: RpcKind,
 {
     const VTABLE: KindVtableRef = &KindVtable {
         create: |world, client, target, packet| {
@@ -89,9 +79,9 @@ where
 
             // Spawn the RPC node
             let mut me = me.add(RpcClientNode {
-                vtable: <T as HasKindVtable>::VTABLE,
                 client,
                 node_id: target,
+                vtable: <T as HasKindVtable<K>>::VTABLE,
                 userdata_ty: TypeId::of::<T>(),
                 userdata: Index::DANGLING,
             });
@@ -99,7 +89,7 @@ where
             let node = T::create(
                 &mut WORLD,
                 RpcClientHandle::wrap(me),
-                RpcClientCup::<T>::decode(&packet)?,
+                <K::Catchup as RpcPacket>::decode(&packet)?,
             )?;
 
             me.userdata = Obj::raw(node);
@@ -110,14 +100,27 @@ where
             Ok(me)
         },
         destroy: |world, target| {
-            bind!(world);
+            bind!(world, let cx: &AccessComp<T>);
             let userdata = target.userdata::<T>();
-            T::destroy(userdata, &mut WORLD)
+
+            let res = if Obj::is_alive(userdata, pack!(cx)) {
+                T::destroy(userdata, &mut WORLD)
+            } else {
+                Ok(())
+            };
+
+            target.entity().destroy();
+
+            res
         },
         message: |world, target, packet| {
-            bind!(world);
-            let packet = RpcClientCb::<T>::decode(&packet)?;
+            bind!(world, let cx: &AccessComp<T>);
+            let packet = <K::ClientBound as RpcPacket>::decode(&packet)?;
             let userdata = target.userdata::<T>();
+            if !Obj::is_alive(userdata, pack!(cx)) {
+                anyhow::bail!("{:?} is not alive", target.id());
+            }
+
             T::process(userdata, &mut WORLD, packet)?;
 
             Ok(())
@@ -142,28 +145,21 @@ impl RpcClient {
         Self::default()
     }
 
-    pub fn define<T>(&mut self) -> &mut Self
+    pub fn define<T, K>(&mut self) -> &mut Self
     where
-        T: RpcClientReplicator,
+        T: RpcClientReplicator<K>,
+        K: RpcKind,
     {
-        let kind_id = TypeId::of::<T::Kind>();
+        let kind_id = TypeId::of::<K>();
         let hash_map::Entry::Vacant(ty_entry) = self.kinds_by_type.entry(kind_id) else {
-            panic!(
-                "RPC kind {:?} registered more than once",
-                type_name::<T::Kind>()
-            );
+            panic!("RPC kind {:?} registered more than once", type_name::<K>());
         };
 
-        let hash_map::Entry::Vacant(name_entry) =
-            self.kinds_by_name.entry(<T::Kind as RpcKind>::ID)
-        else {
-            panic!(
-                "RPC kind name {:?} registered more than once",
-                <T::Kind as RpcKind>::ID,
-            );
+        let hash_map::Entry::Vacant(name_entry) = self.kinds_by_name.entry(K::ID) else {
+            panic!("RPC kind name {:?} registered more than once", K::ID);
         };
 
-        let vtable = <T as HasKindVtable>::VTABLE;
+        let vtable = <T as HasKindVtable<K>>::VTABLE;
         ty_entry.insert(vtable);
         name_entry.insert(vtable);
 
@@ -174,10 +170,7 @@ impl RpcClient {
         self.id_to_node.get(&id).copied()
     }
 
-    pub fn lookup_node<T>(&self, id: RpcNodeId) -> Result<Obj<T>, LookupNodeError>
-    where
-        T: RpcClientReplicator,
-    {
+    pub fn lookup_node<T: Component>(&self, id: RpcNodeId) -> Result<Obj<T>, LookupNodeError> {
         self.id_to_node
             .get(&id)
             .ok_or(LookupNodeError::Missing(id))?
@@ -279,17 +272,11 @@ impl RpcClientNode {
         self.client.queued_packets.push(encoder);
     }
 
-    pub fn opt_userdata<T>(self: Obj<Self>) -> Option<Obj<T>>
-    where
-        T: RpcClientReplicator,
-    {
+    pub fn opt_userdata<T: Component>(self: Obj<Self>) -> Option<Obj<T>> {
         (self.userdata_ty == TypeId::of::<T>()).then_some(Obj::from_raw(self.userdata))
     }
 
-    pub fn userdata<T>(self: Obj<Self>) -> Obj<T>
-    where
-        T: RpcClientReplicator,
-    {
+    pub fn userdata<T: Component>(self: Obj<Self>) -> Obj<T> {
         self.opt_userdata().unwrap()
     }
 }
@@ -342,7 +329,7 @@ impl<K: RpcKind> RpcClientHandle<K> {
 
     pub fn userdata<T>(self) -> Obj<T>
     where
-        T: RpcClientReplicator<Kind = K>,
+        T: RpcClientReplicator<K>,
     {
         self.raw().userdata()
     }

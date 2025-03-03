@@ -115,6 +115,7 @@ pub fn spawn_player(parent: Entity, owner: Obj<PlayerOwner>) -> Entity {
     replicator.rpc_puppet = spawn_server_rpc(replicator);
 
     Entity::service::<RpcGroup>().add_node(replicator.rpc.raw());
+    replicator.rpc_owner.replicate(owner.peer);
 
     me
 }

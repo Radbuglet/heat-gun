@@ -5,9 +5,12 @@ use hg_common::{
             update::ColliderFollows,
         },
         kinematic::{KinematicProps, Pos, Vel},
-        rpc::{RpcClientCb, RpcClientCup, RpcClientHandle, RpcClientReplicator},
+        rpc::{RpcClientHandle, RpcClientReplicator, RpcNodeId},
     },
-    game::player::{PlayerOwnerRpcKind, PlayerPuppetRpcCb, PlayerPuppetRpcKind, PlayerRpcKind},
+    game::player::{
+        PlayerOwnerRpcCb, PlayerOwnerRpcKind, PlayerPuppetRpcCb, PlayerPuppetRpcKind,
+        PlayerRpcCatchup, PlayerRpcCb, PlayerRpcKind,
+    },
     utils::math::{Aabb, RgbaColor},
 };
 use hg_ecs::{bind, component, Entity, Obj, Query, World};
@@ -45,124 +48,99 @@ enum PlayerReplicatorKind {
     Puppet(RpcClientHandle<PlayerPuppetRpcKind>),
 }
 
-impl RpcClientReplicator for PlayerReplicator {
-    type Kind = PlayerRpcKind;
-
+impl RpcClientReplicator<PlayerRpcKind> for PlayerReplicator {
     fn create(
         world: &mut World,
-        rpc: RpcClientHandle<Self::Kind>,
-        packet: RpcClientCup<Self>,
+        rpc: RpcClientHandle<PlayerRpcKind>,
+        packet: PlayerRpcCatchup,
     ) -> anyhow::Result<Obj<Self>> {
         bind!(world);
 
-        let me = rpc.entity();
-
+        let me = Entity::new(rpc.client().entity());
         let pos = me.add(Pos(packet.pos));
-        me.add(SolidRenderer::new_centered(RgbaColor::RED, 50.));
-
-        register_gfx(me);
-
-        Ok(me.add(Self {
+        let state = me.add(PlayerReplicator {
             rpc,
             rpc_kind: None,
             pos,
-        }))
+        });
+
+        Ok(state)
     }
 
-    fn process(
-        self: Obj<Self>,
-        world: &mut World,
-        packet: RpcClientCb<Self>,
-    ) -> anyhow::Result<()> {
+    fn process(self: Obj<Self>, world: &mut World, packet: PlayerRpcCb) -> anyhow::Result<()> {
         bind!(world);
 
         match packet {}
     }
+
+    fn destroy(self: Obj<Self>, world: &mut World) -> anyhow::Result<()> {
+        bind!(world);
+        self.entity().destroy();
+        Ok(())
+    }
 }
 
-#[derive(Debug)]
-pub struct PlayerPuppetReplicator {
-    target: Obj<PlayerReplicator>,
-}
-
-component!(PlayerPuppetReplicator);
-
-impl RpcClientReplicator for PlayerPuppetReplicator {
-    type Kind = PlayerPuppetRpcKind;
-
+impl RpcClientReplicator<PlayerOwnerRpcKind> for PlayerReplicator {
     fn create(
         world: &mut World,
-        rpc: RpcClientHandle<Self::Kind>,
-        packet: RpcClientCup<Self>,
+        rpc: RpcClientHandle<PlayerOwnerRpcKind>,
+        packet: RpcNodeId,
     ) -> anyhow::Result<Obj<Self>> {
         bind!(world);
 
-        let mut target = rpc.client().lookup_node::<PlayerReplicator>(packet)?;
+        let mut me = rpc.client().lookup_node::<Self>(packet)?;
+        anyhow::ensure!(me.rpc_kind.is_none(), "player already has kind replicator");
+        me.rpc_kind = Some(PlayerReplicatorKind::Owner(rpc));
 
-        anyhow::ensure!(
-            target.rpc_kind.is_none(),
-            "parent already has a kind replicator"
-        );
+        tracing::info!("became owner of {:?}", me.entity().debug());
 
-        target.rpc_kind = Some(PlayerReplicatorKind::Puppet(rpc));
+        Ok(me)
+    }
 
-        Ok(rpc.entity().add(Self { target }))
+    fn process(self: Obj<Self>, world: &mut World, packet: PlayerOwnerRpcCb) -> anyhow::Result<()> {
+        bind!(world);
+
+        match packet {}
+    }
+
+    fn destroy(self: Obj<Self>, _world: &mut World) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+impl RpcClientReplicator<PlayerPuppetRpcKind> for PlayerReplicator {
+    fn create(
+        world: &mut World,
+        rpc: RpcClientHandle<PlayerPuppetRpcKind>,
+        packet: RpcNodeId,
+    ) -> anyhow::Result<Obj<Self>> {
+        bind!(world);
+
+        let mut me = rpc.client().lookup_node::<Self>(packet)?;
+        anyhow::ensure!(me.rpc_kind.is_none(), "player already has kind replicator");
+        me.rpc_kind = Some(PlayerReplicatorKind::Puppet(rpc));
+
+        Ok(me)
     }
 
     fn process(
         mut self: Obj<Self>,
         world: &mut World,
-        packet: RpcClientCb<Self>,
+        packet: PlayerPuppetRpcCb,
     ) -> anyhow::Result<()> {
         bind!(world);
 
         match packet {
             PlayerPuppetRpcCb::SetPos(pos) => {
-                self.target.pos.0 = pos;
+                self.pos.0 = pos;
             }
         }
 
         Ok(())
     }
-}
 
-#[derive(Debug)]
-pub struct PlayerOwnerReplicator {
-    target: Obj<PlayerReplicator>,
-}
-
-component!(PlayerOwnerReplicator);
-
-impl RpcClientReplicator for PlayerOwnerReplicator {
-    type Kind = PlayerOwnerRpcKind;
-
-    fn create<'t>(
-        world: &mut World,
-        rpc: RpcClientHandle<Self::Kind>,
-        packet: RpcClientCup<Self>,
-    ) -> anyhow::Result<Obj<Self>> {
-        bind!(world);
-
-        let mut target = rpc.client().lookup_node::<PlayerReplicator>(packet)?;
-
-        anyhow::ensure!(
-            target.rpc_kind.is_none(),
-            "parent already has a kind replicator"
-        );
-
-        target.rpc_kind = Some(PlayerReplicatorKind::Owner(rpc));
-
-        Ok(rpc.entity().add(Self { target }))
-    }
-
-    fn process(
-        self: Obj<Self>,
-        world: &mut World,
-        packet: RpcClientCb<Self>,
-    ) -> anyhow::Result<()> {
-        bind!(world);
-
-        match packet {}
+    fn destroy(self: Obj<Self>, _world: &mut World) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
