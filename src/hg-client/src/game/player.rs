@@ -5,12 +5,9 @@ use hg_common::{
             update::ColliderFollows,
         },
         kinematic::{KinematicProps, Pos, Vel},
-        rpc::{
-            RpcClientCb, RpcClientCreate, RpcClientCup, RpcClientFinished, RpcClientHandle,
-            RpcClientReplicator,
-        },
+        rpc::{RpcClientCb, RpcClientCup, RpcClientHandle, RpcClientReplicator},
     },
-    game::player::PlayerRpcKind,
+    game::player::{PlayerOwnerRpcKind, PlayerPuppetRpcCb, PlayerPuppetRpcKind, PlayerRpcKind},
     utils::math::{Aabb, RgbaColor},
 };
 use hg_ecs::{bind, component, Entity, Obj, Query, World};
@@ -36,33 +33,126 @@ component!(PlayerController);
 #[derive(Debug)]
 pub struct PlayerReplicator {
     rpc: RpcClientHandle<PlayerRpcKind>,
+    rpc_kind: Option<PlayerReplicatorKind>,
+    pos: Obj<Pos>,
 }
 
 component!(PlayerReplicator);
 
+#[derive(Debug, Copy, Clone)]
+enum PlayerReplicatorKind {
+    Owner(RpcClientHandle<PlayerOwnerRpcKind>),
+    Puppet(RpcClientHandle<PlayerPuppetRpcKind>),
+}
+
 impl RpcClientReplicator for PlayerReplicator {
     type Kind = PlayerRpcKind;
 
-    fn create<'t>(
+    fn create(
         world: &mut World,
-        req: RpcClientCreate<'t, Self>,
+        rpc: RpcClientHandle<Self::Kind>,
         packet: RpcClientCup<Self>,
-    ) -> anyhow::Result<RpcClientFinished<'t, Self>> {
+    ) -> anyhow::Result<Obj<Self>> {
         bind!(world);
 
-        let me = Entity::new(req.client_ent())
-            .with(Pos(packet.pos))
-            .with(SolidRenderer::new_centered(RgbaColor::RED, 50.));
+        let me = rpc.entity();
+
+        let pos = me.add(Pos(packet.pos));
+        me.add(SolidRenderer::new_centered(RgbaColor::RED, 50.));
 
         register_gfx(me);
 
-        let mut state = me.add(Self {
-            rpc: RpcClientHandle::DANGLING,
-        });
-        let res = req.finish(state);
-        state.rpc = res.rpc();
+        Ok(me.add(Self {
+            rpc,
+            rpc_kind: None,
+            pos,
+        }))
+    }
 
-        Ok(res)
+    fn process(
+        self: Obj<Self>,
+        world: &mut World,
+        packet: RpcClientCb<Self>,
+    ) -> anyhow::Result<()> {
+        bind!(world);
+
+        match packet {}
+    }
+}
+
+#[derive(Debug)]
+pub struct PlayerPuppetReplicator {
+    target: Obj<PlayerReplicator>,
+}
+
+component!(PlayerPuppetReplicator);
+
+impl RpcClientReplicator for PlayerPuppetReplicator {
+    type Kind = PlayerPuppetRpcKind;
+
+    fn create(
+        world: &mut World,
+        rpc: RpcClientHandle<Self::Kind>,
+        packet: RpcClientCup<Self>,
+    ) -> anyhow::Result<Obj<Self>> {
+        bind!(world);
+
+        let mut target = rpc.client().lookup_node::<PlayerReplicator>(packet)?;
+
+        anyhow::ensure!(
+            target.rpc_kind.is_none(),
+            "parent already has a kind replicator"
+        );
+
+        target.rpc_kind = Some(PlayerReplicatorKind::Puppet(rpc));
+
+        Ok(rpc.entity().add(Self { target }))
+    }
+
+    fn process(
+        mut self: Obj<Self>,
+        world: &mut World,
+        packet: RpcClientCb<Self>,
+    ) -> anyhow::Result<()> {
+        bind!(world);
+
+        match packet {
+            PlayerPuppetRpcCb::SetPos(pos) => {
+                self.target.pos.0 = pos;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct PlayerOwnerReplicator {
+    target: Obj<PlayerReplicator>,
+}
+
+component!(PlayerOwnerReplicator);
+
+impl RpcClientReplicator for PlayerOwnerReplicator {
+    type Kind = PlayerOwnerRpcKind;
+
+    fn create<'t>(
+        world: &mut World,
+        rpc: RpcClientHandle<Self::Kind>,
+        packet: RpcClientCup<Self>,
+    ) -> anyhow::Result<Obj<Self>> {
+        bind!(world);
+
+        let mut target = rpc.client().lookup_node::<PlayerReplicator>(packet)?;
+
+        anyhow::ensure!(
+            target.rpc_kind.is_none(),
+            "parent already has a kind replicator"
+        );
+
+        target.rpc_kind = Some(PlayerReplicatorKind::Owner(rpc));
+
+        Ok(rpc.entity().add(Self { target }))
     }
 
     fn process(

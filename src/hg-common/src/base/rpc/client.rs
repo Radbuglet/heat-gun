@@ -1,6 +1,6 @@
 use std::{
     any::{type_name, TypeId},
-    context::{pack, Bundle},
+    context::pack,
     fmt,
     marker::PhantomData,
     mem,
@@ -11,6 +11,7 @@ use bytes::Bytes;
 use derive_where::derive_where;
 use hg_ecs::{bind, component, entity::Component, AccessComp, Entity, Index, Obj, World, WORLD};
 use hg_utils::hash::{hash_map, FxHashMap};
+use thiserror::Error;
 
 use crate::base::{
     net::{FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket as _},
@@ -25,73 +26,14 @@ pub type RpcClientCup<K> = <<K as RpcClientReplicator>::Kind as RpcKind>::Catchu
 pub type RpcClientCb<K> = <<K as RpcClientReplicator>::Kind as RpcKind>::ClientBound;
 pub type RpcClientSb<K> = <<K as RpcClientReplicator>::Kind as RpcKind>::ServerBound;
 
-pub struct RpcClientCreate<'t, R>
-where
-    R: RpcClientReplicator,
-{
-    _ty: PhantomData<(fn(&'t ()) -> &'t (), fn() -> R)>,
-    client: Obj<RpcClient>,
-    id: RpcNodeId,
-}
-
-impl<'t, R> RpcClientCreate<'t, R>
-where
-    R: RpcClientReplicator,
-{
-    pub fn client_ent(&self) -> Entity {
-        self.client.entity()
-    }
-
-    pub fn client_obj(&self) -> Obj<RpcClient> {
-        self.client
-    }
-
-    pub fn id(&self) -> RpcNodeId {
-        self.id
-    }
-
-    pub fn finish(self, target: Obj<R>, cx: Bundle<&AccessComp<R>>) -> RpcClientFinished<'t, R> {
-        let node = target.entity(pack!(cx));
-        let client_handle = node.add(RpcClientNode {
-            kind: TypeId::of::<R::Kind>(),
-            vtable: <R as HasKindVtable>::VTABLE,
-            node_id: self.id,
-            userdata: Obj::raw(target),
-            client: self.client,
-        });
-
-        RpcClientFinished {
-            _ty: PhantomData,
-            rpc: RpcClientHandle::wrap(client_handle),
-        }
-    }
-}
-
-pub struct RpcClientFinished<'t, R>
-where
-    R: RpcClientReplicator,
-{
-    _ty: PhantomData<fn(&'t ()) -> &'t ()>,
-    rpc: RpcClientHandle<R::Kind>,
-}
-
-impl<'t, R> RpcClientFinished<'t, R>
-where
-    R: RpcClientReplicator,
-{
-    pub fn rpc(&self) -> RpcClientHandle<R::Kind> {
-        self.rpc
-    }
-}
-
 pub trait RpcClientReplicator: Component {
     type Kind: RpcKind;
 
     fn create<'t>(
         world: &mut World,
-        req: RpcClientCreate<'t, Self>,
+        me: RpcClientHandle<Self::Kind>,
         packet: RpcClientCup<Self>,
-    ) -> anyhow::Result<RpcClientFinished<'t, Self>>;
+    ) -> anyhow::Result<Obj<Self>>;
 
     fn process(self: Obj<Self>, world: &mut World, packet: RpcClientCb<Self>)
         -> anyhow::Result<()>;
@@ -121,31 +63,62 @@ trait HasKindVtable {
     const VTABLE: KindVtableRef;
 }
 
-impl<K: RpcClientReplicator> HasKindVtable for K {
+impl<T> HasKindVtable for T
+where
+    T: RpcClientReplicator,
+{
     const VTABLE: KindVtableRef = &KindVtable {
         create: |world, client, target, packet| {
-            let node = K::create(
-                world,
-                RpcClientCreate {
-                    _ty: PhantomData,
-                    client,
-                    id: target,
-                },
-                RpcClientCup::<K>::decode(&packet)?,
+            // Spawn an entity with a destruction guard to ensure that it gets destroyed on
+            // replication failure.
+            let mut guard =
+                scopeguard::guard((world, Option::<Entity>::None), |(world, target)| {
+                    let Some(target) = target else {
+                        return;
+                    };
+
+                    bind!(world);
+                    target.destroy();
+                });
+
+            let (world, destroy_target) = &mut *guard;
+            bind!(world);
+
+            let me = Entity::new(client.entity());
+            *destroy_target = Some(me);
+
+            // Spawn the RPC node
+            let mut me = me.add(RpcClientNode {
+                vtable: <T as HasKindVtable>::VTABLE,
+                client,
+                node_id: target,
+                userdata_ty: TypeId::of::<T>(),
+                userdata: Index::DANGLING,
+            });
+
+            let node = T::create(
+                &mut WORLD,
+                RpcClientHandle::wrap(me),
+                RpcClientCup::<T>::decode(&packet)?,
             )?;
 
-            Ok(node.rpc().raw())
+            me.userdata = Obj::raw(node);
+
+            // Defuse the destruction guard
+            *destroy_target = None;
+
+            Ok(me)
         },
         destroy: |world, target| {
             bind!(world);
-            let userdata = target.userdata::<K>();
-            K::destroy(userdata, &mut WORLD)
+            let userdata = target.userdata::<T>();
+            T::destroy(userdata, &mut WORLD)
         },
         message: |world, target, packet| {
             bind!(world);
-            let packet = RpcClientCb::<K>::decode(&packet)?;
-            let userdata = target.userdata::<K>();
-            K::process(userdata, &mut WORLD, packet)?;
+            let packet = RpcClientCb::<T>::decode(&packet)?;
+            let userdata = target.userdata::<T>();
+            T::process(userdata, &mut WORLD, packet)?;
 
             Ok(())
         },
@@ -169,33 +142,47 @@ impl RpcClient {
         Self::default()
     }
 
-    pub fn define<K: RpcClientReplicator>(&mut self) -> &mut Self {
-        let kind_id = TypeId::of::<K::Kind>();
+    pub fn define<T>(&mut self) -> &mut Self
+    where
+        T: RpcClientReplicator,
+    {
+        let kind_id = TypeId::of::<T::Kind>();
         let hash_map::Entry::Vacant(ty_entry) = self.kinds_by_type.entry(kind_id) else {
             panic!(
                 "RPC kind {:?} registered more than once",
-                type_name::<K::Kind>()
+                type_name::<T::Kind>()
             );
         };
 
         let hash_map::Entry::Vacant(name_entry) =
-            self.kinds_by_name.entry(<K::Kind as RpcKind>::ID)
+            self.kinds_by_name.entry(<T::Kind as RpcKind>::ID)
         else {
             panic!(
                 "RPC kind name {:?} registered more than once",
-                <K::Kind as RpcKind>::ID,
+                <T::Kind as RpcKind>::ID,
             );
         };
 
-        let vtable = <K as HasKindVtable>::VTABLE;
+        let vtable = <T as HasKindVtable>::VTABLE;
         ty_entry.insert(vtable);
         name_entry.insert(vtable);
 
         self
     }
 
-    pub fn lookup_node(&self, id: RpcNodeId) -> Option<Obj<RpcClientNode>> {
+    pub fn lookup_any_node(&self, id: RpcNodeId) -> Option<Obj<RpcClientNode>> {
         self.id_to_node.get(&id).copied()
+    }
+
+    pub fn lookup_node<T>(&self, id: RpcNodeId) -> Result<Obj<T>, LookupNodeError>
+    where
+        T: RpcClientReplicator,
+    {
+        self.id_to_node
+            .get(&id)
+            .ok_or(LookupNodeError::Missing(id))?
+            .opt_userdata()
+            .ok_or(LookupNodeError::WrongType(id))
     }
 
     pub fn recv_packet(mut self: Obj<Self>, packet: Bytes) -> anyhow::Result<()> {
@@ -210,7 +197,7 @@ impl RpcClient {
                 let data = packet.expect().context("failed to parse RPC data")?;
 
                 let target = self
-                    .lookup_node(target_id)
+                    .lookup_any_node(target_id)
                     .with_context(|| format!("node with ID {target_id:?} does not exist"))?;
 
                 (target.vtable.message)(&mut WORLD, target, data)
@@ -218,7 +205,7 @@ impl RpcClient {
             RpcCbHeader::CreateNode(target_id, kind_name) => {
                 let data = packet.expect().context("failed to parse RPC data")?;
 
-                if self.lookup_node(target_id).is_some() {
+                if self.lookup_any_node(target_id).is_some() {
                     anyhow::bail!("node with ID {target_id:?} already exists");
                 }
 
@@ -235,7 +222,7 @@ impl RpcClient {
             }
             RpcCbHeader::DeleteNode(target_id) => {
                 let target = self
-                    .lookup_node(target_id)
+                    .lookup_any_node(target_id)
                     .with_context(|| format!("node with ID {target_id:?} does not exist"))?;
 
                 (target.vtable.destroy)(&mut WORLD, target)?;
@@ -252,14 +239,22 @@ impl RpcClient {
     }
 }
 
+#[derive(Debug, Clone, Error)]
+pub enum LookupNodeError {
+    #[error("node with ID {0:?} does not exist")]
+    Missing(RpcNodeId),
+    #[error("node with ID {0:?} has the wrong type")]
+    WrongType(RpcNodeId),
+}
+
 // === RpcClientNode === //
 
 #[derive(Debug)]
 pub struct RpcClientNode {
     client: Obj<RpcClient>,
-    kind: TypeId,
     node_id: RpcNodeId,
     vtable: KindVtableRef,
+    userdata_ty: TypeId,
     userdata: Index,
 }
 
@@ -275,7 +270,7 @@ impl RpcClientNode {
     }
 
     pub fn send<K: RpcKind>(mut self: Obj<Self>, packet: &K::ServerBound) {
-        assert_eq!(self.kind, TypeId::of::<K>());
+        assert_eq!(self.userdata_ty, TypeId::of::<K>());
 
         let mut encoder = FrameEncoder::new();
         encoder.encode_multi_part(packet);
@@ -284,9 +279,18 @@ impl RpcClientNode {
         self.client.queued_packets.push(encoder);
     }
 
-    pub fn userdata<K: RpcClientReplicator>(self: Obj<Self>) -> Obj<K> {
-        debug_assert_eq!(self.kind, TypeId::of::<K::Kind>());
-        Obj::from_raw(self.userdata)
+    pub fn opt_userdata<T>(self: Obj<Self>) -> Option<Obj<T>>
+    where
+        T: RpcClientReplicator,
+    {
+        (self.userdata_ty == TypeId::of::<T>()).then_some(Obj::from_raw(self.userdata))
+    }
+
+    pub fn userdata<T>(self: Obj<Self>) -> Obj<T>
+    where
+        T: RpcClientReplicator,
+    {
+        self.opt_userdata().unwrap()
     }
 }
 
@@ -320,6 +324,10 @@ impl<K: RpcKind> RpcClientHandle<K> {
         self.raw
     }
 
+    pub fn entity(self) -> Entity {
+        self.raw.entity()
+    }
+
     pub fn id(self) -> RpcNodeId {
         self.raw().node_id
     }
@@ -330,5 +338,12 @@ impl<K: RpcKind> RpcClientHandle<K> {
 
     pub fn send(self, packet: &K::ServerBound) {
         self.raw().send::<K>(packet);
+    }
+
+    pub fn userdata<T>(self) -> Obj<T>
+    where
+        T: RpcClientReplicator<Kind = K>,
+    {
+        self.raw().userdata()
     }
 }
