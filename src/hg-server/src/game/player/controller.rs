@@ -29,7 +29,7 @@ pub struct PlayerReplicator {
 component!(PlayerReplicator);
 
 impl RpcServerReplicator<PlayerRpcKind> for PlayerReplicator {
-    fn catchup(self: Obj<Self>, world: &mut World, _peer: Obj<RpcPeer>) -> PlayerRpcCatchup {
+    fn catchup(self: Obj<Self>, world: &mut World) -> PlayerRpcCatchup {
         bind!(world);
 
         PlayerRpcCatchup {
@@ -51,7 +51,7 @@ impl RpcServerReplicator<PlayerRpcKind> for PlayerReplicator {
 }
 
 impl RpcServerReplicator<PlayerOwnerRpcKind> for PlayerReplicator {
-    fn catchup(self: Obj<Self>, world: &mut World, _peer: Obj<RpcPeer>) -> RpcNodeId {
+    fn catchup(self: Obj<Self>, world: &mut World) -> RpcNodeId {
         bind!(world);
         self.rpc.id()
     }
@@ -75,9 +75,8 @@ impl RpcServerReplicator<PlayerOwnerRpcKind> for PlayerReplicator {
 }
 
 impl RpcServerReplicator<PlayerPuppetRpcKind> for PlayerReplicator {
-    fn catchup(self: Obj<Self>, world: &mut World, _peer: Obj<RpcPeer>) -> RpcNodeId {
+    fn catchup(self: Obj<Self>, world: &mut World) -> RpcNodeId {
         bind!(world);
-
         self.rpc.id()
     }
 

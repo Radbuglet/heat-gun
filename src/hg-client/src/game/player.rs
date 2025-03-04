@@ -5,15 +5,12 @@ use hg_common::{
             update::ColliderFollows,
         },
         kinematic::{KinematicProps, Pos, Vel},
-        rpc::{RpcClientHandle, RpcClientReplicator, RpcNodeId},
+        rpc::{RpcClient, RpcClientHandle, RpcClientKind},
     },
-    game::player::{
-        PlayerOwnerRpcCb, PlayerOwnerRpcKind, PlayerPuppetRpcCb, PlayerPuppetRpcKind,
-        PlayerRpcCatchup, PlayerRpcCb, PlayerRpcKind,
-    },
+    game::player::{PlayerOwnerRpcKind, PlayerPuppetRpcKind, PlayerRpcKind},
     utils::math::{Aabb, RgbaColor},
 };
-use hg_ecs::{bind, component, Entity, Obj, Query, World};
+use hg_ecs::{component, Entity, Obj, Query};
 use macroquad::{
     input::{is_key_down, is_key_pressed, KeyCode},
     math::{FloatExt, Vec2},
@@ -48,101 +45,9 @@ enum PlayerReplicatorKind {
     Puppet(RpcClientHandle<PlayerPuppetRpcKind>),
 }
 
-impl RpcClientReplicator<PlayerRpcKind> for PlayerReplicator {
-    fn create(
-        world: &mut World,
-        rpc: RpcClientHandle<PlayerRpcKind>,
-        packet: PlayerRpcCatchup,
-    ) -> anyhow::Result<Obj<Self>> {
-        bind!(world);
-
-        let me = Entity::new(rpc.client().entity());
-        let pos = me.add(Pos(packet.pos));
-        let state = me.add(PlayerReplicator {
-            rpc,
-            rpc_kind: None,
-            pos,
-        });
-
-        Ok(state)
-    }
-
-    fn process(self: Obj<Self>, world: &mut World, packet: PlayerRpcCb) -> anyhow::Result<()> {
-        bind!(world);
-
-        match packet {}
-    }
-
-    fn destroy(self: Obj<Self>, world: &mut World) -> anyhow::Result<()> {
-        bind!(world);
-        self.entity().destroy();
-        Ok(())
-    }
-}
-
-impl RpcClientReplicator<PlayerOwnerRpcKind> for PlayerReplicator {
-    fn create(
-        world: &mut World,
-        rpc: RpcClientHandle<PlayerOwnerRpcKind>,
-        packet: RpcNodeId,
-    ) -> anyhow::Result<Obj<Self>> {
-        bind!(world);
-
-        let mut me = rpc.client().lookup_node::<Self>(packet)?;
-        anyhow::ensure!(me.rpc_kind.is_none(), "player already has kind replicator");
-        me.rpc_kind = Some(PlayerReplicatorKind::Owner(rpc));
-
-        tracing::info!("became owner of {:?}", me.entity().debug());
-
-        Ok(me)
-    }
-
-    fn process(self: Obj<Self>, world: &mut World, packet: PlayerOwnerRpcCb) -> anyhow::Result<()> {
-        bind!(world);
-
-        match packet {}
-    }
-
-    fn destroy(self: Obj<Self>, _world: &mut World) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-impl RpcClientReplicator<PlayerPuppetRpcKind> for PlayerReplicator {
-    fn create(
-        world: &mut World,
-        rpc: RpcClientHandle<PlayerPuppetRpcKind>,
-        packet: RpcNodeId,
-    ) -> anyhow::Result<Obj<Self>> {
-        bind!(world);
-
-        let mut me = rpc.client().lookup_node::<Self>(packet)?;
-        anyhow::ensure!(me.rpc_kind.is_none(), "player already has kind replicator");
-        me.rpc_kind = Some(PlayerReplicatorKind::Puppet(rpc));
-
-        Ok(me)
-    }
-
-    fn process(
-        mut self: Obj<Self>,
-        world: &mut World,
-        packet: PlayerPuppetRpcCb,
-    ) -> anyhow::Result<()> {
-        bind!(world);
-
-        match packet {
-            PlayerPuppetRpcCb::SetPos(pos) => {
-                self.pos.0 = pos;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn destroy(self: Obj<Self>, _world: &mut World) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
+impl RpcClientKind<PlayerRpcKind> for PlayerReplicator {}
+impl RpcClientKind<PlayerOwnerRpcKind> for PlayerReplicator {}
+impl RpcClientKind<PlayerPuppetRpcKind> for PlayerReplicator {}
 
 // === Prefabs === //
 
@@ -175,6 +80,23 @@ pub fn spawn_player(parent: Entity, camera: Entity) -> Entity {
 // === Systems === //
 
 pub fn sys_update_players() {
+    for client in Query::<Obj<RpcClient>>::new() {
+        for req in &client.query_create::<PlayerRpcKind>() {
+            let me = Entity::new(client.entity());
+            let pos = me.add(Pos(req.packet().pos));
+            let state = me.add(PlayerReplicator {
+                rpc: req.rpc(),
+                rpc_kind: None,
+                pos,
+            });
+
+            me.add(SolidRenderer::new_centered(RgbaColor::ORANGE, 100.));
+            register_gfx(me);
+
+            req.bind_userdata(state);
+        }
+    }
+
     for (mut vel, mut player) in Query::<(Obj<Vel>, Obj<PlayerController>)>::new() {
         // Determine desired heading
         let mut heading = 0.;

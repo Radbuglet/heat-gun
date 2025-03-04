@@ -24,9 +24,9 @@ impl MpClient {
     }
 
     pub fn process(mut self: Obj<Self>) {
-        for packet in self.rpc.flush_sends() {
-            self.transport
-                .send(packet.finish(), ErasedTaskGuard::noop());
+        if let Err(err) = self.rpc.reset() {
+            tracing::error!("protocol error ocurred: {err:?}");
+            self.transport.disconnect(Bytes::new());
         }
 
         while let Some(ev) = self.transport.process() {
@@ -43,14 +43,13 @@ impl MpClient {
                 }
                 ClientTransportEvent::Disconnected { cause: _ } => todo!(),
                 ClientTransportEvent::DataReceived { packet, task } => {
-                    if let Err(err) = self.rpc.recv_packet(packet) {
-                        tracing::error!("failed to process client-bound packet: {err:?}");
-                        self.transport.disconnect(Bytes::new());
-                    }
+                    self.rpc.recv_packet(packet);
                     drop(task);
                 }
             }
         }
+
+        self.rpc.lock();
     }
 }
 

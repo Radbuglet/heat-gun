@@ -24,7 +24,7 @@ use super::{RpcCbHeader, RpcKind, RpcNodeId, RpcSbHeader};
 // === RpcKind === //
 
 pub trait RpcServerReplicator<K: RpcKind>: Component {
-    fn catchup(self: Obj<Self>, world: &mut World, peer: Obj<RpcPeer>) -> K::Catchup;
+    fn catchup(self: Obj<Self>, world: &mut World) -> K::Catchup;
 
     fn process(
         self: Obj<Self>,
@@ -37,7 +37,7 @@ pub trait RpcServerReplicator<K: RpcKind>: Component {
 type KindVtableRef = &'static KindVtable;
 
 struct KindVtable {
-    produce_catchup: fn(&mut World, Obj<RpcServerNode>, Obj<RpcPeer>, &mut FrameEncoder),
+    produce_catchup: fn(&mut World, Obj<RpcServerNode>, &mut FrameEncoder),
     process_inbound: fn(&mut World, Obj<RpcServerNode>, Obj<RpcPeer>, Bytes) -> anyhow::Result<()>,
 }
 
@@ -57,11 +57,11 @@ where
     K: RpcKind,
 {
     const VTABLE: KindVtableRef = &KindVtable {
-        produce_catchup: |world, target, peer, encoder| {
+        produce_catchup: |world, target, encoder| {
             bind!(world);
 
             let (target_id, userdata) = (target.node_id, target.userdata::<T>());
-            let catchup = T::catchup(userdata, &mut WORLD, peer);
+            let catchup = T::catchup(userdata, &mut WORLD);
             encoder.encode_multi_part(&catchup);
             encoder.encode_multi_part(&RpcCbHeader::CreateNode(target_id, Cow::Borrowed(K::ID)));
         },
@@ -83,10 +83,37 @@ where
 pub struct RpcServer {
     id_to_node: FxHashMap<RpcNodeId, Obj<RpcServerNode>>,
     id_gen: RpcNodeId,
-    dirty_queues: Vec<Obj<RpcNodeServerQueue>>,
+    action_queue: Vec<QueuedAction>,
+    node_queues: FxHashSet<Obj<RpcNodeServerQueue>>,
 }
 
-component!(RpcServer);
+#[derive(Debug)]
+enum QueuedAction {
+    ReplicateTo {
+        queue: Obj<RpcNodeServerQueue>,
+        peer: Obj<RpcPeer>,
+        packet: FrameEncoder,
+    },
+    DestroyRemotely {
+        queue: Obj<RpcNodeServerQueue>,
+        peer: Obj<RpcPeer>,
+    },
+    Broadcast {
+        queue: Obj<RpcNodeServerQueue>,
+        packet: FrameEncoder,
+    },
+    DestroyNode {
+        queue: Obj<RpcNodeServerQueue>,
+    },
+}
+
+#[derive(Debug)]
+pub struct RpcNodeServerQueue {
+    node_id: RpcNodeId,
+    visible_to: FxHashSet<Obj<RpcPeer>>,
+}
+
+component!(RpcServer, RpcNodeServerQueue);
 
 impl Default for RpcServer {
     fn default() -> Self {
@@ -99,7 +126,8 @@ impl RpcServer {
         Self {
             id_to_node: FxHashMap::default(),
             id_gen: RpcNodeId(NonZeroU64::new(1).unwrap()),
-            dirty_queues: Vec::new(),
+            action_queue: Vec::new(),
+            node_queues: FxHashSet::default(),
         }
     }
 
@@ -123,13 +151,11 @@ impl RpcServer {
 
         // Create the queue node
         let queue = Entity::new(self.entity()).add(RpcNodeServerQueue {
-            server: self,
             node_id,
             visible_to: FxHashSet::default(),
-            action_queue: Vec::new(),
-            destroyed: false,
-            marked_dirty: false,
         });
+
+        self.node_queues.insert(queue);
 
         // Extend the node with node state
         let server_node = node.add(RpcServerNode {
@@ -185,77 +211,75 @@ impl RpcServer {
     }
 
     pub fn flush(mut self: Obj<Self>, target: &mut (impl ?Sized + RpcServerFlushTransport)) {
-        for mut queue in mem::take(&mut self.dirty_queues) {
-            queue.marked_dirty = false;
-
-            // Remove dead peers since we can't send packets to them anymore.
+        // Remove dead peers since we can't send packets to them anymore.
+        for &(mut queue) in &self.node_queues {
             let cx = pack!(@env => Bundle<infer_bundle!('_)>);
             queue.visible_to.retain(|&peer| {
                 let static ..cx;
                 peer.is_connected()
             });
+        }
 
-            // Send out packets
-            for action in mem::take(&mut queue.action_queue) {
-                match action {
-                    QueuedAction::ReplicateTo(peer, packet) => {
-                        if !peer.is_connected() {
-                            continue;
-                        }
-
-                        let packet = target.terminate_packet(packet);
-                        target.send_packet(&mut WORLD, peer, packet);
-
-                        queue.visible_to.insert(peer);
+        for action in mem::take(&mut self.action_queue) {
+            match action {
+                QueuedAction::ReplicateTo {
+                    mut queue,
+                    peer,
+                    packet,
+                } => {
+                    if !peer.is_connected() {
+                        continue;
                     }
-                    QueuedAction::DestroyRemotely(peer) => {
-                        if !peer.is_connected() {
-                            continue;
-                        }
 
-                        let mut encoder = FrameEncoder::new();
-                        encoder.encode_multi_part(&RpcCbHeader::DeleteNode(queue.node_id));
+                    let packet = target.complete_packet(packet);
+                    target.send_packet(&mut WORLD, peer, packet);
 
-                        let packet = target.terminate_packet(encoder);
-                        target.send_packet(&mut WORLD, peer, packet);
-
-                        queue.visible_to.remove(&peer);
+                    queue.visible_to.insert(peer);
+                }
+                QueuedAction::DestroyRemotely { mut queue, peer } => {
+                    if !peer.is_connected() {
+                        continue;
                     }
-                    QueuedAction::Broadcast(packet) => {
-                        let packet = target.terminate_packet(packet);
 
-                        // TODO: Don't clone
-                        for peer in queue.visible_to.clone() {
-                            target.send_packet(&mut WORLD, peer, packet.clone());
-                        }
+                    let mut encoder = FrameEncoder::new();
+                    encoder.encode_multi_part(&RpcCbHeader::DeleteNode(queue.node_id));
+
+                    let packet = target.complete_packet(encoder);
+                    target.send_packet(&mut WORLD, peer, packet);
+
+                    queue.visible_to.remove(&peer);
+                }
+                QueuedAction::Broadcast { queue, packet } => {
+                    let packet = target.complete_packet(packet);
+
+                    // TODO: Don't clone
+                    for peer in queue.visible_to.clone() {
+                        target.send_packet(&mut WORLD, peer, packet.clone());
                     }
                 }
+                QueuedAction::DestroyNode { mut queue } => {
+                    // Create a destruction packet
+                    let mut encoder = FrameEncoder::new();
+                    encoder.encode_multi_part(&RpcCbHeader::DeleteNode(queue.node_id));
+
+                    // Broadcast it
+                    let packet = target.complete_packet(encoder);
+
+                    for peer in mem::take(&mut queue.visible_to) {
+                        target.send_packet(&mut WORLD, peer, packet.clone());
+                    }
+
+                    // Destroy the unused queue
+                    queue.entity().destroy();
+                    self.node_queues.remove(&queue);
+                }
             }
-
-            // Process queue destruction
-            if !queue.destroyed {
-                continue;
-            }
-
-            // Encode a deletion packet
-            let mut encoder = FrameEncoder::new();
-            encoder.encode_multi_part(&RpcCbHeader::DeleteNode(queue.node_id));
-
-            // Broadcast it
-            let packet = target.terminate_packet(encoder);
-
-            for peer in mem::take(&mut queue.visible_to) {
-                target.send_packet(&mut WORLD, peer, packet.clone());
-            }
-
-            // Destroy the unused queue
-            queue.entity().destroy();
         }
     }
 }
 
 pub trait RpcServerFlushTransport {
-    fn terminate_packet(&mut self, encoder: FrameEncoder) -> Bytes {
+    fn complete_packet(&mut self, encoder: FrameEncoder) -> Bytes {
         encoder.finish()
     }
 
@@ -306,12 +330,13 @@ impl RpcServerNode {
         peer.vis_set.insert(self);
 
         let mut encoder = FrameEncoder::new();
-        (self.vtable.produce_catchup)(&mut WORLD, self, peer, &mut encoder);
+        (self.vtable.produce_catchup)(&mut WORLD, self, &mut encoder);
 
-        self.queue.mark_dirty();
-        self.queue
-            .action_queue
-            .push(QueuedAction::ReplicateTo(peer, encoder));
+        self.server.action_queue.push(QueuedAction::ReplicateTo {
+            queue: self.queue,
+            peer,
+            packet: encoder,
+        });
     }
 
     pub fn de_replicate(mut self: Obj<Self>, mut peer: Obj<RpcPeer>) {
@@ -325,10 +350,12 @@ impl RpcServerNode {
 
         peer.vis_set.remove(&self);
 
-        self.queue.mark_dirty();
-        self.queue
+        self.server
             .action_queue
-            .push(QueuedAction::DestroyRemotely(peer));
+            .push(QueuedAction::DestroyRemotely {
+                queue: self.queue,
+                peer,
+            });
     }
 
     pub fn broadcast<K: RpcKind>(mut self: Obj<Self>, packet: &K::ClientBound) {
@@ -339,15 +366,17 @@ impl RpcServerNode {
         encoder.encode_multi_part(packet);
         encoder.encode_multi_part(&RpcCbHeader::SendMessage(self.node_id));
 
-        self.queue
-            .action_queue
-            .push(QueuedAction::Broadcast(encoder));
+        self.server.action_queue.push(QueuedAction::Broadcast {
+            queue: self.queue,
+            packet: encoder,
+        });
     }
 
     pub fn unregister(mut self: Obj<Self>) {
         // Queue up remote destruction
-        self.queue.destroyed = true;
-        self.queue.mark_dirty();
+        self.server
+            .action_queue
+            .push(QueuedAction::DestroyNode { queue: self.queue });
 
         // Unregister the node from the server
         self.server.id_to_node.remove(&self.node_id);
@@ -361,36 +390,6 @@ impl RpcServerNode {
     pub fn userdata<T: Component>(self: Obj<Self>) -> Obj<T> {
         debug_assert_eq!(self.userdata_ty, TypeId::of::<T>());
         Obj::from_raw(self.userdata)
-    }
-}
-
-#[derive(Debug)]
-pub struct RpcNodeServerQueue {
-    server: Obj<RpcServer>,
-    node_id: RpcNodeId,
-    visible_to: FxHashSet<Obj<RpcPeer>>,
-    action_queue: Vec<QueuedAction>,
-    destroyed: bool,
-    marked_dirty: bool,
-}
-
-#[derive(Debug)]
-enum QueuedAction {
-    ReplicateTo(Obj<RpcPeer>, FrameEncoder),
-    DestroyRemotely(Obj<RpcPeer>),
-    Broadcast(FrameEncoder),
-}
-
-component!(RpcNodeServerQueue);
-
-impl RpcNodeServerQueue {
-    fn mark_dirty(mut self: Obj<Self>) {
-        if self.marked_dirty {
-            return;
-        }
-
-        self.marked_dirty = true;
-        self.server.dirty_queues.push(self);
     }
 }
 

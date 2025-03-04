@@ -32,8 +32,6 @@ use crate::base::{
     },
 };
 
-use super::player::PlayerReplicator;
-
 // === Prefabs === //
 
 pub fn spawn_level(parent: Entity) -> Entity {
@@ -45,9 +43,9 @@ pub fn spawn_level(parent: Entity) -> Entity {
 
     // Setup networking
     let mut rpc = level.add(RpcClient::new());
-    rpc.define::<PlayerReplicator, PlayerRpcKind>();
-    rpc.define::<PlayerReplicator, PlayerOwnerRpcKind>();
-    rpc.define::<PlayerReplicator, PlayerPuppetRpcKind>();
+    rpc.define::<PlayerRpcKind>();
+    rpc.define::<PlayerOwnerRpcKind>();
+    rpc.define::<PlayerPuppetRpcKind>();
 
     let transport = try_sync! {
         let mut store = rustls::RootCertStore::empty();

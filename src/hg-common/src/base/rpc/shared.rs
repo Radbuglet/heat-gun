@@ -17,9 +17,9 @@ pub enum RpcSbHeader {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RpcCbHeader {
-    SendMessage(RpcNodeId),
     CreateNode(RpcNodeId, Cow<'static, str>),
     DeleteNode(RpcNodeId),
+    SendMessage(RpcNodeId),
 }
 
 // === RpcKind === //

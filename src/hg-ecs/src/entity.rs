@@ -415,8 +415,11 @@ impl Entity {
         };
 
         // Remove ourself from our parent
-        if let Some(parent) = entity.parent {
-            let children = store.entities[parent.0].children.mutate();
+        if let Some(parent) = entity
+            .parent
+            .and_then(|parent| store.entities.get_mut(parent.0))
+        {
+            let children = parent.children.mutate();
             let index_in_parent = entity.index_in_parent();
             children.swap_remove(index_in_parent as usize);
 
