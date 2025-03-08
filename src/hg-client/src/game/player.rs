@@ -1,3 +1,6 @@
+use std::context::{infer_bundle, pack, Bundle};
+
+use anyhow::Context;
 use hg_common::{
     base::{
         collide::{
@@ -5,9 +8,10 @@ use hg_common::{
             update::ColliderFollows,
         },
         kinematic::{KinematicProps, Pos, Vel},
-        rpc::{RpcClient, RpcClientHandle, RpcClientKind},
+        rpc::{RpcClientHandle, RpcClientKind, RpcClientQuery},
     },
-    game::player::{PlayerOwnerRpcKind, PlayerPuppetRpcKind, PlayerRpcKind},
+    game::player::{PlayerOwnerRpcKind, PlayerPuppetRpcCb, PlayerPuppetRpcKind, PlayerRpcKind},
+    try_sync,
     utils::math::{Aabb, RgbaColor},
 };
 use hg_ecs::{component, Entity, Obj, Query};
@@ -80,21 +84,75 @@ pub fn spawn_player(parent: Entity, camera: Entity) -> Entity {
 // === Systems === //
 
 pub fn sys_update_players() {
-    for client in Query::<Obj<RpcClient>>::new() {
-        for req in &client.query_create::<PlayerRpcKind>() {
-            let me = Entity::new(client.entity());
-            let pos = me.add(Pos(req.packet().pos));
-            let state = me.add(PlayerReplicator {
-                rpc: req.rpc(),
-                rpc_kind: None,
-                pos,
-            });
+    for req in RpcClientQuery::<PlayerRpcKind>::new().added() {
+        let me = Entity::new(req.client_ent());
+        let pos = me.add(Pos(req.packet().pos));
+        let state = me.add(PlayerReplicator {
+            rpc: req.rpc(),
+            rpc_kind: None,
+            pos,
+        });
 
-            me.add(SolidRenderer::new_centered(RgbaColor::ORANGE, 100.));
-            register_gfx(me);
+        me.add(SolidRenderer::new_centered(RgbaColor::ORANGE, 100.));
+        register_gfx(me);
 
-            req.bind_userdata(state);
+        req.bind_userdata(state);
+    }
+
+    for req in RpcClientQuery::<PlayerOwnerRpcKind>::new().added() {
+        let cx = pack!(@env => Bundle<infer_bundle!('_)>);
+        let res = try_sync! {
+            let static ..cx;
+
+            let mut target = req
+                .packet_target::<PlayerReplicator>()
+                .context("no such entity")?;
+
+            anyhow::ensure!(target.rpc_kind.is_none(), "player already has a kind");
+
+            target.rpc_kind = Some(PlayerReplicatorKind::Owner(req.rpc()));
+
+            tracing::info!("{:?} is an owned player", req.packet());
+        };
+        req.client().report_result(res);
+    }
+
+    for req in RpcClientQuery::<PlayerPuppetRpcKind>::new().added() {
+        let cx = pack!(@env => Bundle<infer_bundle!('_)>);
+        let res = try_sync! {
+            let static ..cx;
+
+            let mut target = req
+                .packet_target::<PlayerReplicator>()
+                .context("no such entity")?;
+
+            anyhow::ensure!(target.rpc_kind.is_none(), "player already has a kind");
+
+            target.rpc_kind = Some(PlayerReplicatorKind::Puppet(req.rpc()));
+
+            tracing::info!("{:?} is a puppet player", req.packet());
+        };
+        req.client().report_result(res);
+    }
+
+    for req in RpcClientQuery::<PlayerRpcKind>::new().msgs() {
+        match *req.packet() {}
+    }
+
+    for req in RpcClientQuery::<PlayerOwnerRpcKind>::new().msgs() {
+        match *req.packet() {}
+    }
+
+    for req in RpcClientQuery::<PlayerPuppetRpcKind>::new().msgs() {
+        let mut me = req.userdata::<PlayerReplicator>();
+
+        match *req.packet() {
+            PlayerPuppetRpcCb::SetPos(pos) => me.pos.0 = pos,
         }
+    }
+
+    for req in RpcClientQuery::<PlayerRpcKind>::new().removed() {
+        req.userdata::<PlayerReplicator>().entity().destroy();
     }
 
     for (mut vel, mut player) in Query::<(Obj<Vel>, Obj<PlayerController>)>::new() {

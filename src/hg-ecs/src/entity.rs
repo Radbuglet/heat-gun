@@ -487,6 +487,22 @@ impl Entity {
             }
 
             // Normalize queue
+            let orig_condemned_len = queue.condemned.len();
+
+            for i in 0.. {
+                let Some(condemned) = queue.condemned.get(i) else {
+                    break;
+                };
+
+                let Some(info) = store.entities.get(condemned.0) else {
+                    continue;
+                };
+
+                for child in &info.children {
+                    queue.condemned.push(child);
+                }
+            }
+
             for &condemned in &queue.condemned {
                 let Some(info) = store.entities.get(condemned.0) else {
                     continue;
@@ -509,7 +525,11 @@ impl Entity {
             f(&mut WORLD);
 
             // Kill condemned entities
-            for &condemned in &queue.condemned {
+            // We don't need to delete the implicit children we added to the condemnation queue
+            // because they'll be deleted by `destroy_now`'s recursive logic.
+            for &condemned in &queue.condemned[..orig_condemned_len] {
+                // Potential double-free on children is OK because this ignores deletions of
+                // entities that have already been destroyed.
                 condemned.destroy_now();
             }
 

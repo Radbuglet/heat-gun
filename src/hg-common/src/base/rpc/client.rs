@@ -4,15 +4,15 @@ use std::{
     fmt,
     marker::PhantomData,
     panic::Location,
-    slice,
     sync::Arc,
 };
 
 use anyhow::Context;
 use bytes::Bytes;
 use derive_where::derive_where;
-use hg_ecs::{component, entity::Component, Entity, Index, Obj};
+use hg_ecs::{component, entity::Component, Entity, Index, Obj, Query};
 use hg_utils::hash::{hash_map, FxHashMap};
+use smallvec::SmallVec;
 
 use crate::{
     base::net::{MultiPartDecoder, RpcPacket},
@@ -180,8 +180,7 @@ impl RpcClient {
 
     pub fn recv_packet(mut self: Obj<Self>, packet: Bytes) {
         let cx = pack!(@env => Bundle<infer_bundle!('_)>);
-
-        let res: anyhow::Result<()> = try_sync! {
+        let res = try_sync! {
             let static ..cx;
 
             let mut packet = MultiPartDecoder::new(packet);
@@ -259,35 +258,12 @@ impl RpcClient {
         self.node_id_map.get(&id).copied()
     }
 
-    pub fn lookup_node<T, K>(&self, id: RpcNodeId) -> Option<Obj<T>>
-    where
-        T: RpcClientKind<K>,
-        K: RpcKind,
-    {
+    pub fn lookup_node<T: Component>(&self, id: RpcNodeId) -> Option<Obj<T>> {
         self.lookup_any_node(id)?.opt_userdata()
     }
 
-    pub fn query_create<K: RpcKind>(&self) -> ClientCreateQuery<K> {
-        assert!(self.locked);
-
-        ClientCreateQuery {
-            inner: self
-                .kinds_by_ty
-                .get(&TypeId::of::<K>())
-                .unwrap_or_else(|| panic!("RPC kind {:?} was never registered", type_name::<K>()))
-                .clone()
-                .as_any()
-                .downcast::<KindState<K>>()
-                .unwrap(),
-        }
-    }
-
-    pub fn query_msg<K: RpcKind>(&self) {
-        todo!()
-    }
-
-    pub fn query_delete<K: RpcKind>(&self) {
-        todo!()
+    pub fn query<K: RpcKind>(self: Obj<Self>) -> RpcClientQuery<K> {
+        RpcClientQuery::new_from([self])
     }
 }
 
@@ -305,6 +281,10 @@ pub struct RpcClientNode {
 component!(RpcClientNode);
 
 impl RpcClientNode {
+    pub fn client_ent(&self) -> Entity {
+        self.client.entity()
+    }
+
     pub fn client(&self) -> Obj<RpcClient> {
         self.client
     }
@@ -353,6 +333,10 @@ impl<K: RpcKind> RpcClientHandle<K> {
         self.raw
     }
 
+    pub fn client_ent(self) -> Entity {
+        self.raw().client_ent()
+    }
+
     pub fn client(self) -> Obj<RpcClient> {
         self.raw().client()
     }
@@ -383,43 +367,63 @@ impl<K: RpcKind> RpcClientHandle<K> {
     }
 }
 
-// === ClientCreateQuery === //
+// === RpcClientQuery === //
 
 #[derive_where(Debug, Clone)]
-pub struct ClientCreateQuery<K: RpcKind> {
-    inner: Arc<KindState<K>>,
+pub struct RpcClientQuery<K: RpcKind> {
+    inner: SmallVec<[Arc<KindState<K>>; 1]>,
 }
 
-impl<K: RpcKind> ClientCreateQuery<K> {
-    pub fn iter(&self) -> ClientCreateQueryIter<'_, K> {
-        ClientCreateQueryIter {
-            iter: self.inner.catchups.iter(),
-        }
+impl<K: RpcKind> RpcClientQuery<K> {
+    pub fn new() -> Self {
+        Self::new_from(Query::new())
     }
-}
 
-impl<'a, K: RpcKind> IntoIterator for &'a ClientCreateQuery<K> {
-    type Item = ClientCreateRequest<'a, K>;
-    type IntoIter = ClientCreateQueryIter<'a, K>;
+    pub fn new_from(objs: impl IntoIterator<Item = Obj<RpcClient>>) -> Self {
+        let cx = pack!(@env => Bundle<infer_bundle!('_)>);
+        let inner = objs
+            .into_iter()
+            .map(|client| {
+                let static ..cx;
+                assert!(client.locked);
+                client
+                    .kinds_by_ty
+                    .get(&TypeId::of::<K>())
+                    .unwrap_or_else(|| {
+                        panic!("RPC kind {:?} was never registered", type_name::<K>())
+                    })
+                    .clone()
+                    .as_any()
+                    .downcast::<KindState<K>>()
+                    .unwrap()
+            })
+            .collect();
 
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
+        Self { inner }
     }
-}
 
-#[derive_where(Debug, Clone)]
-pub struct ClientCreateQueryIter<'a, K: RpcKind> {
-    iter: slice::Iter<'a, QueuedCatchup<K>>,
-}
+    pub fn added<'a>(&'a self) -> impl Iterator<Item = ClientCreateRequest<'a, K>> + Clone + 'a {
+        self.inner
+            .iter()
+            .flat_map(|v| v.catchups.iter())
+            .map(|v| ClientCreateRequest {
+                rpc: v.rpc,
+                packet: &v.packet,
+            })
+    }
 
-impl<'a, K: RpcKind> Iterator for ClientCreateQueryIter<'a, K> {
-    type Item = ClientCreateRequest<'a, K>;
+    pub fn msgs<'a>(&'a self) -> impl Iterator<Item = ClientMessageRequest<'a, K>> + Clone + 'a {
+        self.inner
+            .iter()
+            .flat_map(|v| v.messages.iter())
+            .map(|v| ClientMessageRequest {
+                rpc: v.rpc,
+                packet: &v.packet,
+            })
+    }
 
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|item| ClientCreateRequest {
-            rpc: item.rpc,
-            packet: &item.packet,
-        })
+    pub fn removed<'a>(&'a self) -> impl Iterator<Item = RpcClientHandle<K>> + Clone + 'a {
+        self.inner.iter().flat_map(|v| v.deletions.iter().copied())
     }
 }
 
@@ -431,6 +435,58 @@ pub struct ClientCreateRequest<'a, K: RpcKind> {
 
 impl<'a, K: RpcKind> ClientCreateRequest<'a, K> {
     pub fn packet(self) -> &'a K::Catchup {
+        self.packet
+    }
+
+    pub fn packet_target<T: Component>(self) -> Option<Obj<T>>
+    where
+        K: RpcKind<Catchup = RpcNodeId>,
+    {
+        self.client().lookup_node(*self.packet())
+    }
+
+    pub fn rpc(self) -> RpcClientHandle<K> {
+        self.rpc
+    }
+
+    pub fn client_ent(self) -> Entity {
+        self.rpc.client_ent()
+    }
+
+    pub fn client(self) -> Obj<RpcClient> {
+        self.rpc.client()
+    }
+
+    pub fn opt_userdata<T>(self) -> Option<Obj<T>>
+    where
+        T: RpcClientKind<K>,
+    {
+        self.rpc().opt_userdata()
+    }
+
+    pub fn userdata<T>(self) -> Obj<T>
+    where
+        T: RpcClientKind<K>,
+    {
+        self.rpc().userdata()
+    }
+
+    pub fn bind_userdata<T>(self, value: Obj<T>)
+    where
+        T: RpcClientKind<K>,
+    {
+        self.rpc.bind_userdata(value);
+    }
+}
+
+#[derive_where(Copy, Clone)]
+pub struct ClientMessageRequest<'a, K: RpcKind> {
+    rpc: RpcClientHandle<K>,
+    packet: &'a K::ClientBound,
+}
+
+impl<'a, K: RpcKind> ClientMessageRequest<'a, K> {
+    pub fn packet(self) -> &'a K::ClientBound {
         self.packet
     }
 
@@ -454,12 +510,5 @@ impl<'a, K: RpcKind> ClientCreateRequest<'a, K> {
         T: RpcClientKind<K>,
     {
         self.rpc().userdata()
-    }
-
-    pub fn bind_userdata<T>(self, value: Obj<T>)
-    where
-        T: RpcClientKind<K>,
-    {
-        self.rpc.bind_userdata(value);
     }
 }
