@@ -1,6 +1,5 @@
 use std::context::{infer_bundle, pack, Bundle};
 
-use anyhow::Context;
 use hg_common::{
     base::{
         collide::{
@@ -104,12 +103,8 @@ pub fn sys_update_players() {
         let res = try_sync! {
             let static ..cx;
 
-            let mut target = req
-                .packet_target::<PlayerReplicator>()
-                .context("no such entity")?;
-
+            let mut target = req.packet_target::<PlayerReplicator>()?;
             anyhow::ensure!(target.rpc_kind.is_none(), "player already has a kind");
-
             target.rpc_kind = Some(PlayerReplicatorKind::Owner(req.rpc()));
 
             tracing::info!("{:?} is an owned player", req.packet());
@@ -122,12 +117,8 @@ pub fn sys_update_players() {
         let res = try_sync! {
             let static ..cx;
 
-            let mut target = req
-                .packet_target::<PlayerReplicator>()
-                .context("no such entity")?;
-
+            let mut target = req.packet_target::<PlayerReplicator>()?;
             anyhow::ensure!(target.rpc_kind.is_none(), "player already has a kind");
-
             target.rpc_kind = Some(PlayerReplicatorKind::Puppet(req.rpc()));
 
             tracing::info!("{:?} is a puppet player", req.packet());

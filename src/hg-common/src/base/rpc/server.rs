@@ -1,5 +1,5 @@
 use std::{
-    any::{type_name, TypeId},
+    any::type_name,
     borrow::Cow,
     context::{infer_bundle, pack, Bundle, DerefCx},
     fmt,
@@ -17,9 +17,15 @@ use hg_ecs::{
 };
 use hg_utils::hash::{FxHashMap, FxHashSet};
 
-use crate::base::net::{FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket};
+use crate::{
+    base::net::{FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket},
+    utils::lang::NamedTypeId,
+};
 
-use super::{RpcCbHeader, RpcKind, RpcNodeId, RpcSbHeader};
+use super::{
+    BadRpcNodeKindError, NoSuchRpcNodeError, RpcCbHeader, RpcKind, RpcNodeId, RpcNodeLookupError,
+    RpcSbHeader,
+};
 
 // === RpcKind === //
 
@@ -164,7 +170,7 @@ impl RpcServer {
             vtable: <T as HasKindVtable<K>>::VTABLE,
             visible_to: FxHashSet::default(),
             queue,
-            userdata_ty: TypeId::of::<T>(),
+            userdata_ty: NamedTypeId::of::<T>(),
             userdata: Obj::raw(userdata),
         });
 
@@ -182,8 +188,15 @@ impl RpcServer {
         })
     }
 
-    pub fn lookup_node(&self, id: RpcNodeId) -> Option<Obj<RpcServerNode>> {
-        self.id_to_node.get(&id).copied()
+    pub fn lookup_any_node(&self, id: RpcNodeId) -> Result<Obj<RpcServerNode>, NoSuchRpcNodeError> {
+        self.id_to_node
+            .get(&id)
+            .copied()
+            .ok_or(NoSuchRpcNodeError { id })
+    }
+
+    pub fn lookup_node<T: Component>(&self, id: RpcNodeId) -> Result<Obj<T>, RpcNodeLookupError> {
+        self.lookup_any_node(id)?.opt_userdata().map_err(Into::into)
     }
 
     pub fn recv_packet(self: Obj<Self>, sender: Obj<RpcPeer>, packet: Bytes) -> anyhow::Result<()> {
@@ -197,7 +210,7 @@ impl RpcServer {
 
         let data = packet.expect().context("failed to parse RPC data")?;
 
-        let Some(target) = self.lookup_node(target_id) else {
+        let Ok(target) = self.lookup_any_node(target_id) else {
             tracing::warn!("node with ID {target_id:?} does not exist");
             return Ok(());
         };
@@ -295,7 +308,7 @@ pub struct RpcServerNode {
     vtable: KindVtableRef,
     visible_to: FxHashSet<Obj<RpcPeer>>,
     queue: Obj<RpcNodeServerQueue>,
-    userdata_ty: TypeId,
+    userdata_ty: NamedTypeId,
     userdata: Index,
 }
 
@@ -359,7 +372,7 @@ impl RpcServerNode {
     }
 
     pub fn broadcast<K: RpcKind>(mut self: Obj<Self>, packet: &K::ClientBound) {
-        assert_eq!(self.userdata_ty, TypeId::of::<K>());
+        assert_eq!(self.userdata_ty, NamedTypeId::of::<K>());
 
         let mut encoder = FrameEncoder::new();
 
@@ -387,9 +400,20 @@ impl RpcServerNode {
         }
     }
 
+    pub fn opt_userdata<T: Component>(self: Obj<Self>) -> Result<Obj<T>, BadRpcNodeKindError> {
+        if self.userdata_ty == NamedTypeId::of::<T>() {
+            Ok(Obj::from_raw(self.userdata))
+        } else {
+            Err(BadRpcNodeKindError {
+                id: self.node_id,
+                expected_ty: NamedTypeId::of::<T>(),
+                actual_ty: self.userdata_ty,
+            })
+        }
+    }
+
     pub fn userdata<T: Component>(self: Obj<Self>) -> Obj<T> {
-        debug_assert_eq!(self.userdata_ty, TypeId::of::<T>());
-        Obj::from_raw(self.userdata)
+        self.opt_userdata().unwrap()
     }
 }
 

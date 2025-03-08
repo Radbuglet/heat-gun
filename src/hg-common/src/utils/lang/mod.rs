@@ -19,5 +19,8 @@ pub use futures::*;
 mod nameable_guard;
 pub use nameable_guard::*;
 
+mod named_type;
+pub use named_type::*;
+
 mod steal;
 pub use steal::*;

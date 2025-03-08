@@ -1,5 +1,5 @@
 use std::{
-    any::{type_name, Any, TypeId},
+    any::{type_name, Any},
     context::{infer_bundle, pack, Bundle},
     fmt,
     marker::PhantomData,
@@ -17,10 +17,12 @@ use smallvec::SmallVec;
 use crate::{
     base::net::{MultiPartDecoder, RpcPacket},
     try_sync,
-    utils::lang::MultiError,
+    utils::lang::{MultiError, NamedTypeId},
 };
 
-use super::{RpcCbHeader, RpcKind, RpcNodeId};
+use super::{
+    BadRpcNodeKindError, NoSuchRpcNodeError, RpcCbHeader, RpcKind, RpcNodeId, RpcNodeLookupError,
+};
 
 // === RpcClient === //
 
@@ -29,8 +31,8 @@ pub trait RpcClientKind<K: RpcKind>: Component {}
 #[derive(Debug)]
 pub struct RpcClient {
     node_id_map: FxHashMap<RpcNodeId, Obj<RpcClientNode>>,
-    kinds_by_name: FxHashMap<&'static str, TypeId>,
-    kinds_by_ty: FxHashMap<TypeId, Arc<dyn KindStateErased>>,
+    kinds_by_name: FxHashMap<&'static str, NamedTypeId>,
+    kinds_by_ty: FxHashMap<NamedTypeId, Arc<dyn KindStateErased>>,
     protocol_errors: Vec<anyhow::Error>,
     locked: bool,
 }
@@ -141,7 +143,7 @@ impl RpcClient {
         // Bind the ID
         match self.kinds_by_name.entry(K::ID) {
             hash_map::Entry::Vacant(entry) => {
-                entry.insert(TypeId::of::<K>());
+                entry.insert(NamedTypeId::of::<K>());
             }
             hash_map::Entry::Occupied(entry) => {
                 panic!(
@@ -154,7 +156,7 @@ impl RpcClient {
 
         // Bind the type
         self.kinds_by_ty.insert(
-            TypeId::of::<K>(),
+            NamedTypeId::of::<K>(),
             Arc::new(KindState::<K> {
                 register_loc: Location::caller(),
                 catchups: Vec::new(),
@@ -214,7 +216,7 @@ impl RpcClient {
                         client: me_obj,
                         kind_id,
                         node_id,
-                        userdata_ty: TypeId::of::<()>(),
+                        userdata_ty: NamedTypeId::of::<()>(),
                         userdata: Index::DANGLING,
                     });
 
@@ -254,12 +256,15 @@ impl RpcClient {
         self.locked = true;
     }
 
-    pub fn lookup_any_node(&self, id: RpcNodeId) -> Option<Obj<RpcClientNode>> {
-        self.node_id_map.get(&id).copied()
+    pub fn lookup_any_node(&self, id: RpcNodeId) -> Result<Obj<RpcClientNode>, NoSuchRpcNodeError> {
+        self.node_id_map
+            .get(&id)
+            .copied()
+            .ok_or(NoSuchRpcNodeError { id })
     }
 
-    pub fn lookup_node<T: Component>(&self, id: RpcNodeId) -> Option<Obj<T>> {
-        self.lookup_any_node(id)?.opt_userdata()
+    pub fn lookup_node<T: Component>(&self, id: RpcNodeId) -> Result<Obj<T>, RpcNodeLookupError> {
+        self.lookup_any_node(id)?.opt_userdata().map_err(Into::into)
     }
 
     pub fn query<K: RpcKind>(self: Obj<Self>) -> RpcClientQuery<K> {
@@ -273,8 +278,8 @@ impl RpcClient {
 pub struct RpcClientNode {
     client: Obj<RpcClient>,
     node_id: RpcNodeId,
-    kind_id: TypeId,
-    userdata_ty: TypeId,
+    kind_id: NamedTypeId,
+    userdata_ty: NamedTypeId,
     userdata: Index,
 }
 
@@ -293,8 +298,16 @@ impl RpcClientNode {
         self.node_id
     }
 
-    pub fn opt_userdata<T: Component>(&self) -> Option<Obj<T>> {
-        (self.userdata_ty == TypeId::of::<T>()).then_some(Obj::from_raw(self.userdata))
+    pub fn opt_userdata<T: Component>(&self) -> Result<Obj<T>, BadRpcNodeKindError> {
+        if self.userdata_ty == NamedTypeId::of::<T>() {
+            Ok(Obj::from_raw(self.userdata))
+        } else {
+            Err(BadRpcNodeKindError {
+                id: self.node_id,
+                expected_ty: NamedTypeId::of::<T>(),
+                actual_ty: self.userdata_ty,
+            })
+        }
     }
 
     pub fn userdata<T: Component>(&self) -> Obj<T> {
@@ -302,7 +315,7 @@ impl RpcClientNode {
     }
 
     pub fn bind_userdata<T: Component>(&mut self, value: Obj<T>) {
-        self.userdata_ty = TypeId::of::<T>();
+        self.userdata_ty = NamedTypeId::of::<T>();
         self.userdata = Obj::raw(value);
     }
 }
@@ -345,7 +358,7 @@ impl<K: RpcKind> RpcClientHandle<K> {
         self.raw().node_id()
     }
 
-    pub fn opt_userdata<T>(self) -> Option<Obj<T>>
+    pub fn opt_userdata<T>(self) -> Result<Obj<T>, BadRpcNodeKindError>
     where
         T: RpcClientKind<K>,
     {
@@ -388,7 +401,7 @@ impl<K: RpcKind> RpcClientQuery<K> {
                 assert!(client.locked);
                 client
                     .kinds_by_ty
-                    .get(&TypeId::of::<K>())
+                    .get(&NamedTypeId::of::<K>())
                     .unwrap_or_else(|| {
                         panic!("RPC kind {:?} was never registered", type_name::<K>())
                     })
@@ -438,7 +451,7 @@ impl<'a, K: RpcKind> ClientCreateRequest<'a, K> {
         self.packet
     }
 
-    pub fn packet_target<T: Component>(self) -> Option<Obj<T>>
+    pub fn packet_target<T: Component>(self) -> Result<Obj<T>, RpcNodeLookupError>
     where
         K: RpcKind<Catchup = RpcNodeId>,
     {
@@ -457,7 +470,7 @@ impl<'a, K: RpcKind> ClientCreateRequest<'a, K> {
         self.rpc.client()
     }
 
-    pub fn opt_userdata<T>(self) -> Option<Obj<T>>
+    pub fn opt_userdata<T>(self) -> Result<Obj<T>, BadRpcNodeKindError>
     where
         T: RpcClientKind<K>,
     {
@@ -498,7 +511,7 @@ impl<'a, K: RpcKind> ClientMessageRequest<'a, K> {
         self.rpc
     }
 
-    pub fn opt_userdata<T>(self) -> Option<Obj<T>>
+    pub fn opt_userdata<T>(self) -> Result<Obj<T>, BadRpcNodeKindError>
     where
         T: RpcClientKind<K>,
     {
