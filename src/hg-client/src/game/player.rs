@@ -1,5 +1,3 @@
-use std::context::{infer_bundle, pack, Bundle};
-
 use hg_common::{
     base::{
         collide::{
@@ -9,7 +7,9 @@ use hg_common::{
         kinematic::{KinematicProps, Pos, Vel},
         rpc::{RpcClientHandle, RpcClientKind, RpcClientQuery},
     },
-    game::player::{PlayerOwnerRpcKind, PlayerPuppetRpcCb, PlayerPuppetRpcKind, PlayerRpcKind},
+    game::player::{
+        PlayerOwnerRpcKind, PlayerOwnerRpcSb, PlayerPuppetRpcCb, PlayerPuppetRpcKind, PlayerRpcKind,
+    },
     try_sync,
     utils::math::{Aabb, RgbaColor},
 };
@@ -19,7 +19,7 @@ use macroquad::{
     math::{FloatExt, Vec2},
 };
 
-use crate::base::gfx::{bus::register_gfx, sprite::SolidRenderer};
+use crate::base::gfx::{bus::register_gfx, camera::VirtualCameraSelector, sprite::SolidRenderer};
 
 // === PlayerController === //
 
@@ -27,6 +27,7 @@ use crate::base::gfx::{bus::register_gfx, sprite::SolidRenderer};
 pub struct PlayerController {
     last_heading: f32,
     camera: Obj<Pos>,
+    owned_rpc: RpcClientHandle<PlayerOwnerRpcKind>,
 }
 
 component!(PlayerController);
@@ -52,37 +53,10 @@ impl RpcClientKind<PlayerRpcKind> for PlayerReplicator {}
 impl RpcClientKind<PlayerOwnerRpcKind> for PlayerReplicator {}
 impl RpcClientKind<PlayerPuppetRpcKind> for PlayerReplicator {}
 
-// === Prefabs === //
-
-pub fn spawn_player(parent: Entity, camera: Entity) -> Entity {
-    let player = Entity::new(parent)
-        .with(Pos::default())
-        .with(Vel::default())
-        .with(KinematicProps {
-            gravity: Vec2::Y * 4000.,
-            friction: 0.98,
-        })
-        .with(PlayerController {
-            last_heading: 0.,
-            camera: camera.get(),
-        })
-        .with(SolidRenderer::new_centered(RgbaColor::RED, 50.))
-        .with(Collider::new(ColliderMask::ALL, ColliderMat::Solid));
-
-    player.with(ColliderFollows {
-        target: player.get(),
-        aabb: Aabb::new_centered(Vec2::ZERO, Vec2::splat(50.)),
-    });
-
-    register_gfx(player);
-    register_collider(player.get());
-
-    player
-}
-
 // === Systems === //
 
 pub fn sys_update_players() {
+    // Handle RPCs
     for req in RpcClientQuery::<PlayerRpcKind>::new().added() {
         let me = Entity::new(req.client_ent());
         let pos = me.add(Pos(req.packet().pos));
@@ -92,36 +66,56 @@ pub fn sys_update_players() {
             pos,
         });
 
-        me.add(SolidRenderer::new_centered(RgbaColor::ORANGE, 100.));
+        me.add(SolidRenderer::new_centered(RgbaColor::RED, 50.));
         register_gfx(me);
 
         req.bind_userdata(state);
     }
 
     for req in RpcClientQuery::<PlayerOwnerRpcKind>::new().added() {
-        let cx = pack!(@env => Bundle<infer_bundle!('_)>);
         let res = try_sync! {
-            let static ..cx;
+            let mut camera = req.client_ent().get::<VirtualCameraSelector>();
 
-            let mut target = req.packet_target::<PlayerReplicator>()?;
-            anyhow::ensure!(target.rpc_kind.is_none(), "player already has a kind");
-            target.rpc_kind = Some(PlayerReplicatorKind::Owner(req.rpc()));
+            let mut replicator = req.packet_target::<PlayerReplicator>()?;
+            let target = replicator.entity();
+            anyhow::ensure!(replicator.rpc_kind.is_none(), "player already has a kind");
+            replicator.rpc_kind = Some(PlayerReplicatorKind::Owner(req.rpc()));
+
+            target
+                .with(Vel::default())
+                .with(KinematicProps {
+                    gravity: Vec2::Y * 4000.,
+                    friction: 0.98,
+                })
+                .with(PlayerController {
+                    last_heading: 0.,
+                    camera: camera.current().unwrap().entity().get(),
+                    owned_rpc: req.rpc(),
+                })
+                .with(Collider::new(ColliderMask::ALL, ColliderMat::Solid))
+                .with(ColliderFollows {
+                    target: target.get(),
+                    aabb: Aabb::new_centered(Vec2::ZERO, Vec2::splat(50.)),
+                });
+
+            register_collider(target.get());
 
             tracing::info!("{:?} is an owned player", req.packet());
+
+            req.bind_userdata(replicator);
         };
         req.client().report_result(res);
     }
 
     for req in RpcClientQuery::<PlayerPuppetRpcKind>::new().added() {
-        let cx = pack!(@env => Bundle<infer_bundle!('_)>);
         let res = try_sync! {
-            let static ..cx;
-
-            let mut target = req.packet_target::<PlayerReplicator>()?;
-            anyhow::ensure!(target.rpc_kind.is_none(), "player already has a kind");
-            target.rpc_kind = Some(PlayerReplicatorKind::Puppet(req.rpc()));
+            let mut replicator = req.packet_target::<PlayerReplicator>()?;
+            anyhow::ensure!(replicator.rpc_kind.is_none(), "player already has a kind");
+            replicator.rpc_kind = Some(PlayerReplicatorKind::Puppet(req.rpc()));
 
             tracing::info!("{:?} is a puppet player", req.packet());
+
+            req.bind_userdata(replicator);
         };
         req.client().report_result(res);
     }
@@ -146,7 +140,8 @@ pub fn sys_update_players() {
         req.userdata::<PlayerReplicator>().entity().destroy();
     }
 
-    for (mut vel, mut player) in Query::<(Obj<Vel>, Obj<PlayerController>)>::new() {
+    // Handle owned player updates
+    for (pos, mut vel, mut player) in Query::<(Obj<Pos>, Obj<Vel>, Obj<PlayerController>)>::new() {
         // Determine desired heading
         let mut heading = 0.;
 
@@ -169,6 +164,10 @@ pub fn sys_update_players() {
 
         // Apply heading
         vel.artificial += player.last_heading * Vec2::X;
+
+        // Send position to server.
+        // TODO: Do this somewhere else after the position has been updated.
+        player.owned_rpc.send(&PlayerOwnerRpcSb::SetPos(pos.0));
     }
 }
 

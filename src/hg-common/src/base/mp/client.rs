@@ -29,6 +29,11 @@ impl MpClient {
             self.transport.disconnect(Bytes::new());
         }
 
+        for packet in self.rpc.flush_sends() {
+            self.transport
+                .send(packet.finish(), ErasedTaskGuard::noop());
+        }
+
         while let Some(ev) = self.transport.process() {
             match ev {
                 ClientTransportEvent::Connected => {

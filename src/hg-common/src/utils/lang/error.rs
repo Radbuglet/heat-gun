@@ -73,9 +73,13 @@ pub fn flatten_tokio_join_result<T>(
 
 #[macro_export]
 macro_rules! try_sync {
-    ($($body:tt)*) => {
-        || -> ::anyhow::Result<_> { ::anyhow::Result::Ok({$($body)*}) }()
-    };
+    ($($body:tt)*) => {{
+        let cx = ::core::context::pack!(@env => ::core::context::Bundle<::core::context::infer_bundle!('_)>);
+        || -> ::anyhow::Result<_> {
+            let static ..cx;
+            ::anyhow::Result::Ok({$($body)*})
+        }()
+    }};
 }
 
 pub use try_sync;

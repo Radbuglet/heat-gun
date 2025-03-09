@@ -1,11 +1,11 @@
 use hg_common::base::{
     collide::{bus::sys_flush_colliders, update::sys_update_colliders},
     debug::DebugDraw,
-    kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame, Pos},
+    kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame},
     mp::sys_update_mp_clients,
 };
 use hg_ecs::{bind, Entity, World};
-use macroquad::{math::Vec2, time::get_frame_time};
+use macroquad::time::get_frame_time;
 
 use crate::{
     base::gfx::{
@@ -17,26 +17,14 @@ use crate::{
     game::{
         debug::sys_update_debug,
         level::spawn_level,
-        player::{spawn_player, sys_update_player_camera, sys_update_players},
+        player::{sys_update_player_camera, sys_update_players},
     },
 };
 
 pub fn world_init(world: &mut World) {
     bind!(world);
 
-    // Setup level
-    let level = spawn_level(Entity::root());
-
-    // Spawn the player
-    let player = spawn_player(
-        level,
-        level
-            .get::<VirtualCameraSelector>()
-            .current()
-            .unwrap()
-            .entity(),
-    );
-    player.get::<Pos>().0 = Vec2::new(100., -200.);
+    spawn_level(Entity::root());
 }
 
 pub fn world_tick(world: &mut World) {

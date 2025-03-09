@@ -3,6 +3,7 @@ use std::{
     context::{infer_bundle, pack, Bundle},
     fmt,
     marker::PhantomData,
+    mem,
     panic::Location,
     sync::Arc,
 };
@@ -15,7 +16,10 @@ use hg_utils::hash::{hash_map, FxHashMap};
 use smallvec::SmallVec;
 
 use crate::{
-    base::net::{MultiPartDecoder, RpcPacket},
+    base::{
+        net::{FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket},
+        rpc::RpcSbHeader,
+    },
     try_sync,
     utils::lang::{MultiError, NamedTypeId},
 };
@@ -33,6 +37,7 @@ pub struct RpcClient {
     node_id_map: FxHashMap<RpcNodeId, Obj<RpcClientNode>>,
     kinds_by_name: FxHashMap<&'static str, NamedTypeId>,
     kinds_by_ty: FxHashMap<NamedTypeId, Arc<dyn KindStateErased>>,
+    send_queue: Vec<FrameEncoder>,
     protocol_errors: Vec<anyhow::Error>,
     locked: bool,
 }
@@ -119,6 +124,7 @@ impl RpcClient {
             node_id_map: FxHashMap::default(),
             kinds_by_name: FxHashMap::default(),
             kinds_by_ty: FxHashMap::default(),
+            send_queue: Vec::new(),
             protocol_errors: Vec::new(),
             locked: true,
         }
@@ -251,6 +257,11 @@ impl RpcClient {
         self.report_result(res);
     }
 
+    #[must_use]
+    pub fn flush_sends(&mut self) -> Vec<FrameEncoder> {
+        mem::take(&mut self.send_queue)
+    }
+
     pub fn lock(&mut self) {
         assert!(!self.locked);
         self.locked = true;
@@ -296,6 +307,17 @@ impl RpcClientNode {
 
     pub fn node_id(&self) -> RpcNodeId {
         self.node_id
+    }
+
+    pub fn send<K: RpcKind>(mut self: Obj<Self>, packet: &K::ServerBound) {
+        assert_eq!(self.kind_id, NamedTypeId::of::<K>());
+
+        let mut encoder = FrameEncoder::new();
+
+        encoder.encode_multi_part(packet);
+        encoder.encode_multi_part(&RpcSbHeader::SendMessage(self.node_id));
+
+        self.client.send_queue.push(encoder);
     }
 
     pub fn opt_userdata<T: Component>(&self) -> Result<Obj<T>, BadRpcNodeKindError> {
@@ -356,6 +378,10 @@ impl<K: RpcKind> RpcClientHandle<K> {
 
     pub fn node_id(self) -> RpcNodeId {
         self.raw().node_id()
+    }
+
+    pub fn send(self, packet: &K::ServerBound) {
+        self.raw().send::<K>(packet);
     }
 
     pub fn opt_userdata<T>(self) -> Result<Obj<T>, BadRpcNodeKindError>

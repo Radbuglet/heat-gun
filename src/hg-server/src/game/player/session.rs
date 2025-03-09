@@ -1,4 +1,4 @@
-use hg_common::base::{mp::MpServerSession, rpc::RpcPeer};
+use hg_common::base::{mp::MpServerSession, rpc::RpcServerPeer};
 use hg_ecs::{component, Obj};
 
 use super::PlayerReplicator;
@@ -7,7 +7,7 @@ use super::PlayerReplicator;
 
 #[derive(Debug)]
 pub struct PlayerOwner {
-    pub peer: Obj<RpcPeer>,
+    pub peer: Obj<RpcServerPeer>,
     pub sess: Obj<MpServerSession>,
     pub player: Obj<PlayerReplicator>,
 }
@@ -15,7 +15,7 @@ pub struct PlayerOwner {
 component!(PlayerOwner);
 
 impl PlayerOwner {
-    pub fn downcast(peer: Obj<RpcPeer>) -> Obj<Self> {
+    pub fn downcast(peer: Obj<RpcServerPeer>) -> Obj<Self> {
         peer.entity().get()
     }
 }

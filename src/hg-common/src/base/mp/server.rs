@@ -9,7 +9,7 @@ use hg_utils::hash::FxHashMap;
 use crate::base::{
     mp::MpSbHello,
     net::{ErasedTaskGuard, PeerId, RpcPacket, ServerTransport, ServerTransportEvent},
-    rpc::{RpcPeer, RpcServer, RpcServerFlushTransport},
+    rpc::{RpcServerPeer, RpcServer, RpcServerFlushTransport},
     time::RunLoop,
 };
 
@@ -91,7 +91,7 @@ impl MpServer {
 struct ServerFlushTrans;
 
 impl RpcServerFlushTransport for ServerFlushTrans {
-    fn send_packet(&mut self, world: &mut World, target: Obj<RpcPeer>, packet: Bytes) {
+    fn send_packet(&mut self, world: &mut World, target: Obj<RpcServerPeer>, packet: Bytes) {
         bind!(world);
 
         let mut target = target.entity().get::<MpServerSession>();
@@ -114,7 +114,7 @@ pub struct MpServerSession {
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum SessionState {
     Login,
-    Play { peer: Obj<RpcPeer>, name: String },
+    Play { peer: Obj<RpcServerPeer>, name: String },
 }
 
 component!(MpServerSession);
@@ -128,11 +128,11 @@ impl MpServerSession {
         }
     }
 
-    pub fn downcast(peer: Obj<RpcPeer>) -> Obj<Self> {
+    pub fn downcast(peer: Obj<RpcServerPeer>) -> Obj<Self> {
         peer.entity().get()
     }
 
-    pub fn peer(&self) -> Obj<RpcPeer> {
+    pub fn peer(&self) -> Obj<RpcServerPeer> {
         let SessionState::Play { peer, .. } = self.state else {
             panic!("session has not yet transitioned to a play state");
         };

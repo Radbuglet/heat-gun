@@ -3,12 +3,13 @@ use hg_common::{
     base::{
         kinematic::Pos,
         rpc::{
-            spawn_server_rpc, RpcGroup, RpcNodeId, RpcPeer, RpcServerHandle, RpcServerReplicator,
+            spawn_server_rpc, RpcGroup, RpcNodeId, RpcServerHandle, RpcServerPeer,
+            RpcServerReplicator,
         },
     },
     game::player::{
-        PlayerOwnerRpcKind, PlayerOwnerRpcSb, PlayerPuppetRpcKind, PlayerPuppetRpcSb,
-        PlayerRpcCatchup, PlayerRpcKind, PlayerRpcSb,
+        PlayerOwnerRpcKind, PlayerOwnerRpcSb, PlayerPuppetRpcCb, PlayerPuppetRpcKind,
+        PlayerPuppetRpcSb, PlayerRpcCatchup, PlayerRpcKind, PlayerRpcSb,
     },
 };
 use hg_ecs::{bind, component, Entity, Obj, World};
@@ -41,7 +42,7 @@ impl RpcServerReplicator<PlayerRpcKind> for PlayerReplicator {
     fn process(
         self: Obj<Self>,
         world: &mut World,
-        _peer: Obj<RpcPeer>,
+        _peer: Obj<RpcServerPeer>,
         packet: PlayerRpcSb,
     ) -> anyhow::Result<()> {
         bind!(world);
@@ -59,7 +60,7 @@ impl RpcServerReplicator<PlayerOwnerRpcKind> for PlayerReplicator {
     fn process(
         mut self: Obj<Self>,
         world: &mut World,
-        _peer: Obj<RpcPeer>,
+        _peer: Obj<RpcServerPeer>,
         packet: PlayerOwnerRpcSb,
     ) -> anyhow::Result<()> {
         bind!(world);
@@ -67,6 +68,7 @@ impl RpcServerReplicator<PlayerOwnerRpcKind> for PlayerReplicator {
         match packet {
             PlayerOwnerRpcSb::SetPos(pos) => {
                 self.pos.0 = pos;
+                self.rpc_puppet.broadcast(&PlayerPuppetRpcCb::SetPos(pos));
             }
         }
 
@@ -83,7 +85,7 @@ impl RpcServerReplicator<PlayerPuppetRpcKind> for PlayerReplicator {
     fn process(
         self: Obj<Self>,
         world: &mut World,
-        _peer: Obj<RpcPeer>,
+        _peer: Obj<RpcServerPeer>,
         packet: PlayerPuppetRpcSb,
     ) -> anyhow::Result<()> {
         bind!(world);
@@ -113,7 +115,10 @@ pub fn spawn_player(parent: Entity, owner: Obj<PlayerOwner>) -> Entity {
     replicator.rpc_owner = spawn_server_rpc(replicator);
     replicator.rpc_puppet = spawn_server_rpc(replicator);
 
-    Entity::service::<RpcGroup>().add_node(replicator.rpc.raw());
+    let all_group = Entity::service::<RpcGroup>();
+
+    all_group.add_node(replicator.rpc.raw(), None);
+    all_group.add_node(replicator.rpc_puppet.raw(), Some(owner.peer));
     replicator.rpc_owner.replicate(owner.peer);
 
     me

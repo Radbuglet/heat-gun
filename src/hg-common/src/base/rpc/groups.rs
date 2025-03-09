@@ -8,7 +8,7 @@ use crate::{
     utils::lang::{steal_from_ecs, Steal},
 };
 
-use super::{RpcPeer, RpcServerNode};
+use super::{RpcServerNode, RpcServerPeer};
 
 #[derive(Debug, Default)]
 pub struct RpcGroup {
@@ -18,7 +18,7 @@ pub struct RpcGroup {
 #[derive(Debug, Default)]
 struct RpcGroupInner {
     nodes: FxHashSet<Obj<RpcGroupFollower>>,
-    peers: FxHashSet<Obj<RpcPeer>>,
+    peers: FxHashSet<Obj<RpcServerPeer>>,
 }
 
 component!(RpcGroup);
@@ -28,10 +28,15 @@ impl RpcGroup {
         Self::default()
     }
 
-    pub fn add_node(mut self: Obj<Self>, target: Obj<RpcServerNode>) -> Obj<RpcGroupFollower> {
+    pub fn add_node(
+        mut self: Obj<Self>,
+        target: Obj<RpcServerNode>,
+        excluded: Option<Obj<RpcServerPeer>>,
+    ) -> Obj<RpcGroupFollower> {
         let follower = target.entity().add(RpcGroupFollower {
             rpc: target,
             group: self,
+            excluded,
         });
 
         self.inner.nodes.insert(follower);
@@ -48,14 +53,17 @@ impl RpcGroup {
                 return false;
             }
 
-            target.replicate(peer);
+            if Some(peer) != excluded {
+                target.replicate(peer);
+            }
+
             true
         });
 
         follower
     }
 
-    pub fn add_peer(mut self: Obj<Self>, peer: Obj<RpcPeer>) {
+    pub fn add_peer(mut self: Obj<Self>, peer: Obj<RpcServerPeer>) {
         if !peer.is_connected() {
             return;
         }
@@ -67,11 +75,13 @@ impl RpcGroup {
         bind!(world);
 
         for &node in &inner.nodes {
-            node.rpc.replicate(peer);
+            if node.excluded != Some(peer) {
+                node.rpc.replicate(peer);
+            }
         }
     }
 
-    pub fn remove_peer(mut self: Obj<Self>, peer: Obj<RpcPeer>) {
+    pub fn remove_peer(mut self: Obj<Self>, peer: Obj<RpcServerPeer>) {
         if !self.inner.peers.remove(&peer) {
             return;
         }
@@ -85,7 +95,9 @@ impl RpcGroup {
         bind!(world);
 
         for &node in &inner.nodes {
-            node.rpc.de_replicate(peer);
+            if node.excluded != Some(peer) {
+                node.rpc.de_replicate(peer);
+            }
         }
     }
 }
@@ -94,6 +106,7 @@ impl RpcGroup {
 pub struct RpcGroupFollower {
     rpc: Obj<RpcServerNode>,
     group: Obj<RpcGroup>,
+    excluded: Option<Obj<RpcServerPeer>>,
 }
 
 component!(RpcGroupFollower);
