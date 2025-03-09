@@ -65,7 +65,13 @@ pub fn flatten_tokio_join_result<T>(
     match res {
         Ok(Ok(v)) => Ok(v),
         Ok(Err(err)) => Err(err),
-        Err(err) => Err(anyhow::Error::new(err).context(PANIC_ERR_MSG)),
+        Err(err) => {
+            if err.is_cancelled() {
+                Err(anyhow::Error::new(err).context("worker thread cancelled"))
+            } else {
+                Err(anyhow::Error::new(err).context(PANIC_ERR_MSG))
+            }
+        }
     }
 }
 

@@ -41,7 +41,6 @@ impl MpClient {
                     self.transport.send(
                         FrameEncoder::single(&MpSbHello {
                             username: "player_mc_playerface".to_string(),
-                            style: 0,
                         }),
                         ErasedTaskGuard::noop(),
                     );
@@ -54,7 +53,7 @@ impl MpClient {
             }
         }
 
-        self.rpc.lock();
+        self.rpc.freeze();
     }
 }
 

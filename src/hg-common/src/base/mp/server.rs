@@ -9,7 +9,7 @@ use hg_utils::hash::FxHashMap;
 use crate::base::{
     mp::MpSbHello,
     net::{ErasedTaskGuard, PeerId, RpcPacket, ServerTransport, ServerTransportEvent},
-    rpc::{RpcServerPeer, RpcServer, RpcServerFlushTransport},
+    rpc::{RpcGroup, RpcServer, RpcServerFlushTransport, RpcServerPeer},
     time::RunLoop,
 };
 
@@ -18,8 +18,9 @@ use crate::base::{
 #[derive(Debug)]
 pub struct MpServer {
     transport: Box<dyn ServerTransport>,
-    sessions: FxHashMap<PeerId, Obj<MpServerSession>>,
     rpc: Obj<RpcServer>,
+    all_players: Obj<RpcGroup>,
+    sessions: FxHashMap<PeerId, Obj<MpServerSession>>,
     on_join: DeferSignal<Obj<MpServerSession>>,
     on_quit: DeferSignal<Obj<MpServerSession>>,
 }
@@ -27,10 +28,11 @@ pub struct MpServer {
 component!(MpServer);
 
 impl MpServer {
-    pub fn new(transport: Box<dyn ServerTransport>, rpc: Obj<RpcServer>) -> Self {
+    pub fn new(me: Entity, transport: Box<dyn ServerTransport>, rpc: Obj<RpcServer>) -> Self {
         Self {
             transport,
             rpc,
+            all_players: Entity::new(me).add(RpcGroup::new()),
             sessions: FxHashMap::default(),
             on_join: DeferSignal::new(),
             on_quit: DeferSignal::new(),
@@ -43,6 +45,10 @@ impl MpServer {
 
     pub fn on_quit(&self) -> DeferSignalReader<Obj<MpServerSession>> {
         self.on_quit.reader()
+    }
+
+    pub fn all_players(&self) -> Obj<RpcGroup> {
+        self.all_players
     }
 
     pub fn process(mut self: Obj<Self>) {
@@ -63,6 +69,7 @@ impl MpServer {
                     if let SessionState::Play { peer, .. } = sess.state {
                         peer.disconnect();
                         self.on_quit.fire(sess);
+                        self.all_players.remove_peer(peer);
                     }
                     sess.entity().destroy();
                 }
@@ -83,8 +90,8 @@ impl MpServer {
             }
         }
 
-        self.on_join.lock();
-        self.on_quit.lock();
+        self.on_join.freeze();
+        self.on_quit.freeze();
     }
 }
 
@@ -114,7 +121,10 @@ pub struct MpServerSession {
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum SessionState {
     Login,
-    Play { peer: Obj<RpcServerPeer>, name: String },
+    Play {
+        peer: Obj<RpcServerPeer>,
+        name: String,
+    },
 }
 
 component!(MpServerSession);
@@ -155,6 +165,7 @@ impl MpServerSession {
                 tracing::info!("Peer {} logged in with {packet:?}", self.peer);
                 let peer = self.manager.rpc.register_peer(self.entity());
                 self.manager.on_join.fire(self);
+                self.manager.all_players.add_peer(peer);
                 self.state = SessionState::Play {
                     peer,
                     name: packet.username.clone(),

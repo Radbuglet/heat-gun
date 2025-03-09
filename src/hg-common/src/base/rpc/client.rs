@@ -39,7 +39,7 @@ pub struct RpcClient {
     kinds_by_ty: FxHashMap<NamedTypeId, Arc<dyn KindStateErased>>,
     send_queue: Vec<FrameEncoder>,
     protocol_errors: Vec<anyhow::Error>,
-    locked: bool,
+    frozen: bool,
 }
 
 #[derive_where(Debug)]
@@ -126,7 +126,7 @@ impl RpcClient {
             kinds_by_ty: FxHashMap::default(),
             send_queue: Vec::new(),
             protocol_errors: Vec::new(),
-            locked: true,
+            frozen: true,
         }
     }
 
@@ -173,7 +173,7 @@ impl RpcClient {
     }
 
     pub fn reset(&mut self) -> anyhow::Result<()> {
-        assert!(self.locked);
+        assert!(self.frozen);
 
         for entry in self.kinds_by_ty.values_mut() {
             Arc::get_mut(entry)
@@ -181,7 +181,7 @@ impl RpcClient {
                 .reset();
         }
 
-        self.locked = false;
+        self.frozen = false;
 
         MultiError::from_iter(self.protocol_errors.drain(..).map(Err)).map_err(anyhow::Error::new)
     }
@@ -262,9 +262,9 @@ impl RpcClient {
         mem::take(&mut self.send_queue)
     }
 
-    pub fn lock(&mut self) {
-        assert!(!self.locked);
-        self.locked = true;
+    pub fn freeze(&mut self) {
+        assert!(!self.frozen);
+        self.frozen = true;
     }
 
     pub fn lookup_any_node(&self, id: RpcNodeId) -> Result<Obj<RpcClientNode>, NoSuchRpcNodeError> {
@@ -424,7 +424,7 @@ impl<K: RpcKind> RpcClientQuery<K> {
             .into_iter()
             .map(|client| {
                 let static ..cx;
-                assert!(client.locked);
+                assert!(client.frozen);
                 client
                     .kinds_by_ty
                     .get(&NamedTypeId::of::<K>())

@@ -1,13 +1,9 @@
 #![feature(arbitrary_self_types)]
 #![feature(context_injection)]
 
-use std::{net::SocketAddr, str::FromStr, sync::Arc};
-
 use anyhow::Context;
 use driver::{world_init, world_main_loop};
-use hg_common::base::net::{generate_dev_priv_key, quic_server::QuicServerTransport};
 use hg_ecs::World;
-use quinn::crypto::rustls::QuicServerConfig;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
@@ -31,26 +27,9 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .context("failed to install crypto provider")?;
 
-    // Setup crypto
-    let (dev_key, dev_cert) = generate_dev_priv_key()?;
-    let crypto = rustls::ServerConfig::builder()
-        // Clients do not identify themselves through certificates.
-        .with_no_client_auth()
-        // Identify ourselves with the private key and self-signed certificate we just generated.
-        .with_single_cert(vec![dev_cert], dev_key)
-        .context("failed to create server TLS config")?;
-
-    let crypto = QuicServerConfig::try_from(crypto).context("failed to create QUIC crypto")?;
-    let crypto = Arc::new(crypto);
-
-    // Setup server
-    let bind_addr = SocketAddr::from_str("127.0.0.1:8080").unwrap();
-    let config = quinn::ServerConfig::with_crypto(crypto);
-    let transport = QuicServerTransport::new(config, bind_addr);
-
     // Create world
     let mut world = World::new();
-    world_init(&mut world, transport);
+    world_init(&mut world)?;
     world_main_loop(&mut world);
 
     Ok(())

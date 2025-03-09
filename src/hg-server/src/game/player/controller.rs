@@ -2,10 +2,8 @@ use glam::Vec2;
 use hg_common::{
     base::{
         kinematic::Pos,
-        rpc::{
-            spawn_server_rpc, RpcGroup, RpcNodeId, RpcServerHandle, RpcServerPeer,
-            RpcServerReplicator,
-        },
+        mp::MpServer,
+        rpc::{spawn_server_rpc, RpcNodeId, RpcServerHandle, RpcServerPeer, RpcServerReplicator},
     },
     game::player::{
         PlayerOwnerRpcKind, PlayerOwnerRpcSb, PlayerPuppetRpcCb, PlayerPuppetRpcKind,
@@ -115,10 +113,10 @@ pub fn spawn_player(parent: Entity, owner: Obj<PlayerOwner>) -> Entity {
     replicator.rpc_owner = spawn_server_rpc(replicator);
     replicator.rpc_puppet = spawn_server_rpc(replicator);
 
-    let all_group = Entity::service::<RpcGroup>();
+    let all_players = me.deep_get::<MpServer>().all_players();
 
-    all_group.add_node(replicator.rpc.raw(), None);
-    all_group.add_node(replicator.rpc_puppet.raw(), Some(owner.peer));
+    all_players.add_node(replicator.rpc.raw(), None);
+    all_players.add_node(replicator.rpc_puppet.raw(), Some(owner.peer));
     replicator.rpc_owner.replicate(owner.peer);
 
     me

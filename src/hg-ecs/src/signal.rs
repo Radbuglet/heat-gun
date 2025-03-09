@@ -5,14 +5,14 @@ use std::{slice, sync::Arc};
 #[derive(Debug)]
 pub struct DeferSignal<E> {
     events: Arc<Vec<E>>,
-    locked: bool,
+    frozen: bool,
 }
 
 impl<E> Default for DeferSignal<E> {
     fn default() -> Self {
         Self {
             events: Arc::default(),
-            locked: true,
+            frozen: true,
         }
     }
 }
@@ -23,26 +23,26 @@ impl<E> DeferSignal<E> {
     }
 
     pub fn reset(&mut self) {
-        self.locked = false;
+        self.frozen = false;
         Arc::get_mut(&mut self.events)
             .expect("cannot reset a signal while it's being iterated over")
             .clear();
     }
 
     pub fn fire(&mut self, event: E) {
-        assert!(!self.locked, "cannot push to a locked signal");
+        assert!(!self.frozen, "cannot push to a frozen signal");
 
         Arc::get_mut(&mut self.events)
             .expect("cannot extend a signal while it's being iterated over")
             .push(event);
     }
 
-    pub fn lock(&mut self) {
-        self.locked = true;
+    pub fn freeze(&mut self) {
+        self.frozen = true;
     }
 
     pub fn reader(&self) -> DeferSignalReader<E> {
-        assert!(self.locked, "cannot iterate over an unlocked signal");
+        assert!(self.frozen, "cannot iterate over an unfrozen signal");
 
         DeferSignalReader {
             events: self.events.clone(),
@@ -50,7 +50,7 @@ impl<E> DeferSignal<E> {
     }
 
     pub fn iter(&self) -> slice::Iter<'_, E> {
-        assert!(self.locked, "cannot iterate over an unlocked signal");
+        assert!(self.frozen, "cannot iterate over an unfrozen signal");
 
         self.events.iter()
     }

@@ -142,6 +142,8 @@ fn spawn_tile_map(parent: Entity) -> Entity {
         let grass = background.palette.lookup_by_name("grass");
         let stone = background.palette.lookup_by_name("stone");
 
+        fastrand::seed(4);
+
         for pos in AabbI::new(0, 0, 100, 100).iter_inclusive() {
             if fastrand::f32() > 0.4 {
                 continue;
