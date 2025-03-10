@@ -1,5 +1,5 @@
 use hg_common::base::{
-    collide::{bus::sys_flush_colliders, update::sys_update_colliders},
+    collide::{bus::sys_flush_colliders, group::sys_update_colliders},
     debug::DebugDraw,
     kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame},
     mp::sys_update_mp_clients,

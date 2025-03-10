@@ -1,10 +1,10 @@
 use hg_common::{
     base::{
         collide::{
-            bus::{register_collider, Collider, ColliderMask, ColliderMat},
-            update::ColliderFollows,
+            bus::{collide_everything, ColliderMask, ColliderMat},
+            group::{spawn_collider, ColliderGroup},
         },
-        kinematic::{KinematicProps, Pos, Vel},
+        kinematic::{spawn_collision_checker, CollisionChecker, KinematicProps, Pos, Vel},
         rpc::{RpcClientHandle, RpcClientKind, RpcClientQuery},
     },
     game::player::{
@@ -28,9 +28,20 @@ pub struct PlayerController {
     last_heading: f32,
     camera: Obj<Pos>,
     owned_rpc: RpcClientHandle<PlayerOwnerRpcKind>,
+    collider_group: Obj<ColliderGroup>,
+    ground_checker: Obj<CollisionChecker>,
+    on_ground_coyote_time: u8,
+    on_jump_coyote_time: u8,
+    jump_extend_time: u8,
 }
 
 component!(PlayerController);
+
+impl PlayerController {
+    pub fn is_on_ground(&self) -> bool {
+        self.ground_checker.is_touching
+    }
+}
 
 // === PlayerReplicator === //
 
@@ -59,7 +70,18 @@ pub fn sys_update_players() {
     // Handle RPCs
     for req in RpcClientQuery::<PlayerRpcKind>::new().added() {
         let me = Entity::new(req.client_ent());
+
         let pos = me.add(Pos(req.packet().pos));
+        let collider_group = me.add(ColliderGroup::new());
+
+        spawn_collider(
+            collider_group,
+            pos,
+            Aabb::new_centered(Vec2::ZERO, Vec2::splat(50.0)),
+            ColliderMask::ALL,
+            ColliderMat::Solid,
+        );
+
         let state = me.add(PlayerReplicator {
             rpc: req.rpc(),
             rpc_kind: None,
@@ -91,14 +113,12 @@ pub fn sys_update_players() {
                     last_heading: 0.,
                     camera: camera.current().unwrap().entity().get(),
                     owned_rpc: req.rpc(),
-                })
-                .with(Collider::new(ColliderMask::ALL, ColliderMat::Solid))
-                .with(ColliderFollows {
-                    target: target.get(),
-                    aabb: Aabb::new_centered(Vec2::ZERO, Vec2::splat(50.)),
+                    collider_group: target.get(),
+                    ground_checker: spawn_collision_checker(target.get(), Vec2::Y),
+                    on_ground_coyote_time: 0,
+                    on_jump_coyote_time: 0,
+                    jump_extend_time: 0,
                 });
-
-            register_collider(target.get());
 
             tracing::info!("{:?} is an owned player", req.packet());
 
@@ -153,14 +173,47 @@ pub fn sys_update_players() {
             heading += 1.;
         }
 
+        if player.is_on_ground() {
+            player.on_ground_coyote_time = 8;
+        } else {
+            player.on_ground_coyote_time = player.on_ground_coyote_time.saturating_sub(1);
+        }
+
         if is_key_pressed(KeyCode::Space) {
-            vel.physical.y = -2000.;
+            player.on_jump_coyote_time = 8;
+        } else {
+            player.on_jump_coyote_time = player.on_jump_coyote_time.saturating_sub(1);
+        }
+
+        if player.on_jump_coyote_time > 0 && player.on_ground_coyote_time > 0 {
+            player.on_jump_coyote_time = 0;
+            player.on_ground_coyote_time = 0;
+            player.jump_extend_time = 16;
+        }
+
+        if player.jump_extend_time > 0 && is_key_down(KeyCode::Space) {
+            vel.physical.y = -1500.;
+            player.jump_extend_time -= 1;
+        } else {
+            player.jump_extend_time = 0;
         }
 
         heading *= 2000.;
 
         // Compute actual heading
-        player.last_heading = player.last_heading.lerp(heading, 0.9);
+        let heading_strength = if player.is_on_ground() { 0.9 } else { 0.2 };
+        player.last_heading = player.last_heading.lerp(heading, heading_strength);
+
+        if player
+            .collider_group
+            .cast_hull(
+                Vec2::X * player.last_heading.signum(),
+                &mut collide_everything(),
+            )
+            .is_obstructed()
+        {
+            player.last_heading = 0.;
+        }
 
         // Apply heading
         vel.artificial += player.last_heading * Vec2::X;

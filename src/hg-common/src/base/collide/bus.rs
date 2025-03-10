@@ -1,20 +1,19 @@
 use std::{
-    context::{infer_bundle, pack, Bundle},
     fmt,
     ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, ControlFlow, Not},
 };
 
-use hg_ecs::{component, query::query_removed, AccessComp, Entity, Obj, World, WORLD};
+use hg_ecs::{bind, component, query::query_removed, Entity, Obj, World, WORLD};
 
 use crate::utils::math::{Aabb, Bhv, BvhNodeIdx, HullCastRequest, HullCastResult};
 
-// === ColliderBus === //
+// === Predicates === //
 
-pub type ColliderLookupCx<'a> = (
-    &'a mut WORLD,
-    &'a mut AccessComp<ColliderBus>,
-    &'a mut AccessComp<Collider>,
-);
+pub fn collide_everything() -> impl 'static + Copy + FnMut(Obj<Collider>, &mut World) -> bool {
+    |_collider, _world| true
+}
+
+// === ColliderBus === //
 
 #[derive(Debug, Default)]
 pub struct ColliderBus {
@@ -35,7 +34,7 @@ impl ColliderBus {
     pub fn lookup<B>(
         self: Obj<Self>,
         lookup: Aabb,
-        mut predicate: impl FnMut((Obj<Collider>, Bundle<ColliderLookupCx<'_>>)) -> ControlFlow<B>,
+        mut predicate: impl FnMut((Obj<Collider>, &mut World)) -> ControlFlow<B>,
     ) -> ControlFlow<B> {
         let mut queue = self.tree.root_idx().into_iter().collect::<Vec<_>>();
 
@@ -51,7 +50,7 @@ impl ColliderBus {
                 continue;
             };
 
-            predicate((candidate, pack!(@env)))?;
+            predicate((candidate, &mut WORLD))?;
         }
 
         ControlFlow::Continue(())
@@ -60,12 +59,12 @@ impl ColliderBus {
     pub fn check_aabb(
         self: Obj<Self>,
         aabb: Aabb,
-        mut predicate: impl FnMut(Obj<Collider>, Bundle<ColliderLookupCx<'_>>) -> bool,
+        mut predicate: impl FnMut(Obj<Collider>, &mut World) -> bool,
     ) -> bool {
-        cbit::cbit!(for (collider, cx) in self.lookup(aabb) {
-            let static ..cx;
+        cbit::cbit!(for (collider, world) in self.lookup(aabb) {
+            bind!(world);
 
-            if !predicate(collider) {
+            if !predicate(collider, &mut WORLD) {
                 continue;
             }
 
@@ -89,17 +88,15 @@ impl ColliderBus {
     pub fn cast_hull(
         self: Obj<Self>,
         request: HullCastRequest,
-        mut predicate: impl FnMut(Obj<Collider>, Bundle<ColliderLookupCx<'_>>) -> bool,
+        mut predicate: impl FnMut(Obj<Collider>, &mut World) -> bool,
     ) -> HullCastResult {
-        let env = pack!(@env => Bundle<infer_bundle!('_)>);
         let mut result = request.result_clear();
 
         cbit::cbit!(
-            for (collider, cx) in self.lookup(request.candidate_aabb()) {
-                let static ..env;
-                let static ..cx;
+            for (collider, world) in self.lookup(request.candidate_aabb()) {
+                bind!(world);
 
-                if !predicate(collider) {
+                if !predicate(collider, &mut WORLD) {
                     continue;
                 }
 
