@@ -1,8 +1,10 @@
+use std::time::Instant;
+
 use hg_common::{
     base::{
         collide::{
             bus::{collide_everything, ColliderMask, ColliderMat},
-            group::{spawn_collider, ColliderGroup},
+            group::{collide_no_group, spawn_collider, ColliderGroup},
         },
         kinematic::{spawn_collision_checker, CollisionChecker, KinematicProps, Pos, Vel},
         rpc::{RpcClientHandle, RpcClientKind, RpcClientQuery},
@@ -11,22 +13,30 @@ use hg_common::{
         PlayerOwnerRpcKind, PlayerOwnerRpcSb, PlayerPuppetRpcCb, PlayerPuppetRpcKind, PlayerRpcKind,
     },
     try_sync,
-    utils::math::{Aabb, RgbaColor},
+    utils::math::{Aabb, HullCastRequest, RgbaColor, Segment},
 };
 use hg_ecs::{component, Entity, Obj, Query};
 use macroquad::{
-    input::{is_key_down, is_key_pressed, KeyCode},
+    input::{
+        is_key_down, is_key_pressed, is_mouse_button_pressed, mouse_position, KeyCode, MouseButton,
+    },
     math::{FloatExt, Vec2},
 };
 
-use crate::base::gfx::{bus::register_gfx, camera::VirtualCameraSelector, sprite::SolidRenderer};
+use crate::base::gfx::{
+    bus::register_gfx,
+    camera::{VirtualCamera, VirtualCameraSelector},
+    sprite::SolidRenderer,
+};
+
+use super::bullet::BulletTrailRenderer;
 
 // === PlayerController === //
 
 #[derive(Debug, Clone)]
 pub struct PlayerController {
     last_heading: f32,
-    camera: Obj<Pos>,
+    camera: Obj<VirtualCamera>,
     owned_rpc: RpcClientHandle<PlayerOwnerRpcKind>,
     collider_group: Obj<ColliderGroup>,
     ground_checker: Obj<CollisionChecker>,
@@ -221,12 +231,32 @@ pub fn sys_update_players() {
         // Send position to server.
         // TODO: Do this somewhere else after the position has been updated.
         player.owned_rpc.send(&PlayerOwnerRpcSb::SetPos(pos.0));
+
+        if is_mouse_button_pressed(MouseButton::Left) {
+            let start = pos.0;
+            let end = player
+                .camera
+                .screen_to_world()
+                .transform_point2(Vec2::from(mouse_position()));
+
+            let bus = player.collider_group.expect_bus();
+            let dir = (end - start).normalize_or_zero();
+            let res = bus.cast_hull(
+                HullCastRequest::new(Aabb::new_centered(pos.0, Vec2::splat(5.)), dir * 5000.),
+                collide_no_group(player.collider_group),
+            );
+
+            player
+                .entity()
+                .deep_get::<BulletTrailRenderer>()
+                .spawn(Instant::now(), Segment::new_delta(start, dir * res.dist));
+        }
     }
 }
 
 pub fn sys_update_player_camera() {
-    for (pos, mut player) in Query::<(Obj<Pos>, Obj<PlayerController>)>::new() {
+    for (pos, player) in Query::<(Obj<Pos>, Obj<PlayerController>)>::new() {
         // Update camera
-        player.camera.0 = pos.0;
+        player.camera.entity().get::<Pos>().0 = pos.0;
     }
 }

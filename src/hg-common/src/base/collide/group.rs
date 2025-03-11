@@ -1,20 +1,39 @@
-use std::{
-    context::{infer_bundle, pack, Bundle},
-    sync::Arc,
-};
+use std::sync::Arc;
 
 use glam::Vec2;
-use hg_ecs::{bind, component, Entity, Obj, Query, World, WORLD};
+use hg_ecs::{bind, component, Entity, Obj, Query, World};
 
 use crate::{
     base::kinematic::Pos,
     utils::math::{Aabb, HullCastRequest, HullCastResult},
 };
 
-use super::bus::{register_collider, Collider, ColliderMask, ColliderMat};
+use super::bus::{register_collider, Collider, ColliderBus, ColliderMask, ColliderMat};
 
 const CONCURRENT_MUTATION_ERR: &str =
     "cannot modify the member set of a collider group while it is being iterated over";
+
+// === Predicates === //
+
+pub fn collide_no_group(
+    group: Obj<ColliderGroup>,
+) -> impl 'static + Copy + FnMut(Obj<Collider>, &mut World) -> bool {
+    move |collider, world| collide_no_group_inner(world, group, collider)
+}
+
+fn collide_no_group_inner(
+    world: &mut World,
+    group: Obj<ColliderGroup>,
+    collider: Obj<Collider>,
+) -> bool {
+    bind!(world);
+
+    let Some(member) = collider.entity().try_get::<ColliderGroupMember>() else {
+        return true;
+    };
+
+    member.group != group
+}
 
 // === Components === //
 
@@ -47,6 +66,10 @@ impl ColliderGroup {
         self.colliders.clone()
     }
 
+    pub fn expect_bus(&self) -> Obj<ColliderBus> {
+        self.colliders[0].collider.expect_bus()
+    }
+
     pub fn cast_hull(
         self: Obj<Self>,
         delta: Vec2,
@@ -65,21 +88,7 @@ impl ColliderGroup {
         let bus = first_member.collider.expect_bus();
 
         let mut predicate = |collider: Obj<Collider>, world: &mut World| {
-            bind!(world);
-
-            let cx = pack!(@env => Bundle<infer_bundle!('_)>);
-            if collider
-                .entity()
-                .try_get::<ColliderGroupMember>()
-                .is_some_and(|v| {
-                    let static ..cx;
-                    v.group == self
-                })
-            {
-                return false;
-            }
-
-            predicate(collider, &mut WORLD)
+            collide_no_group(self)(collider, world) && predicate(collider, world)
         };
 
         for &member in self.members().iter() {

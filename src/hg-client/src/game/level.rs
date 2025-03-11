@@ -32,12 +32,15 @@ use crate::base::{
     },
 };
 
+use super::bullet::BulletTrailRenderer;
+
 // === Prefabs === //
 
 pub fn spawn_level(parent: Entity) -> Entity {
     let level = Entity::new(parent)
         .with(ColliderBus::default())
-        .with(DebugDraw::new(debug_draw_macroquad()));
+        .with(DebugDraw::new(debug_draw_macroquad()))
+        .with(BulletTrailRenderer::new());
 
     set_debug_draw(level.get());
 

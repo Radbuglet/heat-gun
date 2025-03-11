@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use hg_common::base::{
     collide::{bus::sys_flush_colliders, group::sys_update_colliders},
     debug::DebugDraw,
@@ -15,6 +17,7 @@ use crate::{
         tile::TileRenderer,
     },
     game::{
+        bullet::BulletTrailRenderer,
         debug::sys_update_debug,
         level::spawn_level,
         player::{sys_update_player_camera, sys_update_players},
@@ -56,6 +59,10 @@ pub fn world_render() {
 
         for layer in &find_gfx::<TileRenderer>(camera) {
             layer.get::<TileRenderer>().render(camera_obj.focus());
+        }
+
+        for trails in &find_gfx::<BulletTrailRenderer>(camera) {
+            trails.get::<BulletTrailRenderer>().render(Instant::now());
         }
 
         for solid in &find_gfx::<SolidRenderer>(camera) {

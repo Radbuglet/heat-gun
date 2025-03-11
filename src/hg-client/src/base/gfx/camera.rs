@@ -2,7 +2,7 @@ use hg_common::{base::kinematic::Pos, utils::math::Aabb};
 use hg_ecs::{component, Obj, Query};
 use macroquad::{
     camera::{pop_camera_state, push_camera_state, set_camera, Camera},
-    math::{Mat4, Vec2},
+    math::{Affine2, Mat4, Vec2},
     miniquad::window::screen_size,
     texture::RenderPass,
 };
@@ -60,6 +60,18 @@ impl VirtualCamera {
         let guard = VirtualCameraGuard::new();
         set_camera(self);
         guard
+    }
+
+    pub fn screen_to_world(&self) -> Affine2 {
+        let screen_size = Vec2::from(screen_size());
+
+        Affine2::from_translation(self.focus().center())
+            * Affine2::from_scale(self.focus().size() / screen_size)
+            * Affine2::from_translation(-screen_size / 2.)
+    }
+
+    pub fn world_to_screen(&self) -> Affine2 {
+        self.screen_to_world().inverse()
     }
 }
 
