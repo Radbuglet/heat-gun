@@ -1,4 +1,4 @@
-use std::{cmp, collections::HashMap, u32};
+use std::{cmp, collections::HashMap, mem::offset_of, u32};
 
 use crevice::std430::AsStd430;
 use glam::{Mat2, Vec2, Vec3, Vec4};
@@ -20,7 +20,6 @@ pub struct QuadBrushHandle(pub Index);
 #[derive(Debug)]
 pub struct QuadRenderer {
     device: wgpu::Device,
-    queue: wgpu::Queue,
     format: wgpu::TextureFormat,
     depth: DepthGenerator,
     shaders: Arena<Shader>,
@@ -60,10 +59,9 @@ struct Brush {
 }
 
 impl QuadRenderer {
-    pub fn new(device: wgpu::Device, queue: wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+    pub fn new(device: wgpu::Device, format: wgpu::TextureFormat) -> Self {
         Self {
             device,
-            queue,
             format,
             depth: DepthGenerator::new(),
             shaders: Arena::new(),
@@ -73,10 +71,6 @@ impl QuadRenderer {
 
     pub fn device(&self) -> &wgpu::Device {
         &self.device
-    }
-
-    pub fn queue(&self) -> &wgpu::Queue {
-        &self.queue
     }
 
     pub fn create_shader(&mut self, opts: QuadShaderOpts<'_>) -> QuadShaderHandle {
@@ -261,7 +255,7 @@ impl QuadRenderer {
         }
     }
 
-    pub fn prepare(&mut self) {
+    pub fn prepare(&mut self, queue: &wgpu::Queue) {
         for (_, shader) in &mut self.shaders {
             // Re-create the uniform buffer if necessary
             let min_uniform_size = shader.uniform_data.len() as wgpu::BufferAddress;
@@ -296,7 +290,7 @@ impl QuadRenderer {
             }
 
             // Write the uniform buffer
-            self.queue.write_buffer(
+            queue.write_buffer(
                 shader.uniform_buffer.as_ref().unwrap(),
                 0,
                 &shader.uniform_data,
@@ -332,7 +326,7 @@ impl QuadRenderer {
             for &brush in &shader.brushes {
                 let brush = &mut self.brushes[brush.0];
 
-                self.queue.write_buffer(
+                queue.write_buffer(
                     shader.instance_buffer.as_ref().unwrap(),
                     byte_offset_accum,
                     &brush.instance_data,
@@ -446,7 +440,23 @@ pub fn create_solid_quad_shader(quad: &mut QuadRenderer) -> QuadShaderHandle {
         vs_main: "vs_main",
         fs_main: "fs_main",
         constants: &HashMap::default(),
-        instance_attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4],
+        instance_attributes: &[
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x3,
+                offset: offset_of!(<SolidQuadInstance as AsStd430>::Output, pos) as u64,
+                shader_location: 0,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: offset_of!(<SolidQuadInstance as AsStd430>::Output, size) as u64,
+                shader_location: 1,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: offset_of!(<SolidQuadInstance as AsStd430>::Output, color) as u64,
+                shader_location: 2,
+            },
+        ],
         instance_stride: SolidQuadInstance::std430_size_static(),
         uniform_stride: SolidQuadUniforms::std430_size_static(),
     })

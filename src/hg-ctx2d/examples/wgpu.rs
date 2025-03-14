@@ -133,7 +133,6 @@ impl App {
 
         app.renderer = Some(WgpuContext::new(
             app.device.clone(),
-            app.queue.clone(),
             app.surface_format.unwrap(),
         ));
 
@@ -148,7 +147,8 @@ impl App {
         let renderer = state.renderer.as_mut().unwrap();
         renderer.reset();
         renderer.fill_rect(0.0, 0.0, 0.1, 0.1);
-        renderer.prepare();
+        renderer.fill_rect(0.2, 0.3, 0.05, 0.1);
+        renderer.prepare(&state.queue);
 
         let frame = state.surface.get_current_texture()?;
 

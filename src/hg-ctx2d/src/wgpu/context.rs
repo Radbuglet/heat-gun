@@ -20,8 +20,8 @@ pub struct WgpuContext {
 }
 
 impl WgpuContext {
-    pub fn new(device: wgpu::Device, queue: wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        let mut quads = QuadRenderer::new(device, queue, format);
+    pub fn new(device: wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        let mut quads = QuadRenderer::new(device, format);
         let fill_rect_shader = create_solid_quad_shader(&mut quads);
 
         Self {
@@ -43,8 +43,8 @@ impl WgpuContext {
         );
     }
 
-    pub fn prepare(&mut self) {
-        self.quads.prepare();
+    pub fn prepare(&mut self, queue: &wgpu::Queue) {
+        self.quads.prepare(queue);
     }
 
     pub fn render(&self, pass: &mut wgpu::RenderPass<'_>) {
