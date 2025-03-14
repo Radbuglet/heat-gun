@@ -1,7 +1,8 @@
-use std::{cmp, collections::HashMap};
+use std::{cmp, collections::HashMap, u32};
 
+use crevice::std430::AsStd430;
+use glam::{Mat2, Vec2, Vec3, Vec4};
 use thunderdome::{Arena, Index};
-use wgpu::util::DeviceExt;
 
 use super::{
     context::StreamWritable,
@@ -13,16 +14,8 @@ use super::{
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct QuadShaderHandle(pub Index);
 
-impl QuadShaderHandle {
-    pub const DANGLING: Self = Self(Index::DANGLING);
-}
-
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct QuadBrushHandle(pub Index);
-
-impl QuadBrushHandle {
-    pub const DANGLING: Self = Self(Index::DANGLING);
-}
 
 #[derive(Debug)]
 pub struct QuadRenderer {
@@ -36,13 +29,16 @@ pub struct QuadRenderer {
 
 #[derive(Debug)]
 struct Shader {
+    debug_name: String,
+
     // Pipeline
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
 
     // Buffers
-    bind_group: wgpu::BindGroup,
-    uniform_buffer: wgpu::Buffer,
+    bind_group: Option<wgpu::BindGroup>,
+    uniform_buffer: Option<wgpu::Buffer>,
+    instance_buffer: Option<wgpu::Buffer>,
 
     // State
     uniform_stride: usize,
@@ -55,10 +51,9 @@ struct Shader {
 #[derive(Debug)]
 struct Brush {
     shader: QuadShaderHandle,
-    instance_buffer: Option<wgpu::Buffer>,
     uniform_offset: usize,
-
     instance_data: Vec<u8>,
+    shader_instance_buf_offset: u32,
     instance_count: u32,
     epoch_starts: Vec<(DepthEpoch, u32)>,
     last_depth_epoch: DepthEpoch,
@@ -125,7 +120,7 @@ impl QuadRenderer {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &module,
-                entry_point: vs_main.as_deref(),
+                entry_point: Some(vs_main),
                 compilation_options: wgpu::PipelineCompilationOptions {
                     constants: &constants,
                     zero_initialize_workgroup_memory: true,
@@ -149,7 +144,7 @@ impl QuadRenderer {
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &module,
-                entry_point: fs_main.as_deref(),
+                entry_point: Some(fs_main),
                 compilation_options: wgpu::PipelineCompilationOptions {
                     constants: &constants,
                     zero_initialize_workgroup_memory: true,
@@ -164,31 +159,13 @@ impl QuadRenderer {
             cache: None,
         });
 
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(&format!("{debug_name} uniform buffer")),
-            size: (uniform_stride * 8) as wgpu::BufferAddress,
-            usage: wgpu::BufferUsages::UNIFORM,
-            mapped_at_creation: false,
-        });
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(&format!("{debug_name} bind group")),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &uniform_buffer,
-                    offset: 0,
-                    size: None,
-                }),
-            }],
-        });
-
         let handle = QuadShaderHandle(self.shaders.insert(Shader {
+            debug_name: opts.debug_name.to_string(),
             pipeline,
             bind_group_layout,
-            bind_group,
-            uniform_buffer,
+            uniform_buffer: None,
+            instance_buffer: None,
+            bind_group: None,
             uniform_stride,
             instance_stride,
             uniform_data: Vec::new(),
@@ -221,9 +198,9 @@ impl QuadRenderer {
         // Register the brush
         let handle = QuadBrushHandle(self.brushes.insert(Brush {
             shader: shader_handle,
-            instance_buffer: None,
             uniform_offset,
             instance_data: Vec::new(),
+            shader_instance_buf_offset: 0,
             instance_count: 0,
             epoch_starts: Vec::new(),
             last_depth_epoch: self.depth.epoch,
@@ -249,14 +226,13 @@ impl QuadRenderer {
         let curr_epoch = self.depth.curr().epoch;
 
         if brush.epoch_starts.is_empty() {
-            assert!(brush.instance_data.is_empty());
+            debug_assert!(brush.instance_data.is_empty());
             brush.epoch_starts.push((curr_epoch, 0));
             brush.last_depth_epoch = curr_epoch;
         }
 
         if curr_epoch != brush.last_depth_epoch {
             brush.epoch_starts.push((curr_epoch, brush.instance_count));
-
             brush.last_depth_epoch = curr_epoch;
         }
 
@@ -267,6 +243,8 @@ impl QuadRenderer {
             brush.instance_data.len() - old_len,
             self.shaders[brush.shader.0].instance_stride
         );
+
+        brush.instance_count += 1;
 
         // Advance to the next depth level
         self.depth.next();
@@ -285,19 +263,84 @@ impl QuadRenderer {
 
     pub fn prepare(&mut self) {
         for (_, shader) in &mut self.shaders {
-            self.queue
-                .write_buffer(&shader.uniform_buffer, 0, &shader.uniform_data);
+            // Re-create the uniform buffer if necessary
+            let min_uniform_size = shader.uniform_data.len() as wgpu::BufferAddress;
+
+            if shader
+                .uniform_buffer
+                .as_ref()
+                .is_none_or(|v| v.size() < min_uniform_size)
+            {
+                let uniform_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("{} uniform buffer", shader.debug_name)),
+                    size: min_uniform_size,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+
+                let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(&format!("{} bind group", shader.debug_name)),
+                    layout: &shader.bind_group_layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &uniform_buffer,
+                            offset: 0,
+                            size: None,
+                        }),
+                    }],
+                });
+
+                shader.uniform_buffer = Some(uniform_buffer);
+                shader.bind_group = Some(bind_group);
+            }
+
+            // Write the uniform buffer
+            self.queue.write_buffer(
+                shader.uniform_buffer.as_ref().unwrap(),
+                0,
+                &shader.uniform_data,
+            );
+
+            // Determine the required size of the instance buffer
+            let min_instance_size = shader
+                .brushes
+                .iter()
+                .map(|&brush| self.brushes[brush.0].instance_data.len() as wgpu::BufferAddress)
+                .sum();
+
+            // Re-create the instance buffer if necessary
+            if shader
+                .instance_buffer
+                .as_ref()
+                .is_none_or(|v| v.size() < min_instance_size)
+            {
+                let instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("{} instance buffer", shader.debug_name)),
+                    size: min_instance_size,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+
+                shader.instance_buffer = Some(instance_buffer);
+            }
+
+            // Write the instance buffer
+            let mut byte_offset_accum = 0;
+            let mut instance_offset_accum = 0;
 
             for &brush in &shader.brushes {
                 let brush = &mut self.brushes[brush.0];
 
-                brush.instance_buffer = Some(self.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: None,
-                        contents: &brush.instance_data,
-                        usage: wgpu::BufferUsages::VERTEX,
-                    },
-                ));
+                self.queue.write_buffer(
+                    shader.instance_buffer.as_ref().unwrap(),
+                    byte_offset_accum,
+                    &brush.instance_data,
+                );
+                byte_offset_accum += brush.instance_data.len() as wgpu::BufferAddress;
+
+                brush.shader_instance_buf_offset = instance_offset_accum;
+                instance_offset_accum += brush.instance_count;
             }
         }
     }
@@ -311,12 +354,13 @@ impl QuadRenderer {
 
             for (_, shader) in &self.shaders {
                 pass.set_pipeline(&shader.pipeline);
+                pass.set_vertex_buffer(0, shader.instance_buffer.as_ref().unwrap().slice(..));
 
                 for &brush_handle in &shader.brushes {
                     let brush = &self.brushes[brush_handle.0];
 
                     // Figure out the run of vertices this brush contributes to this epoch
-                    let instance_range = {
+                    let instance_range_rel = {
                         let epoch_data_idx =
                             &mut brush_to_next_epoch_idx[brush_handle.0.slot() as usize];
 
@@ -344,10 +388,15 @@ impl QuadRenderer {
                         epoch_start..epoch_end
                     };
 
+                    let instance_range_abs = {
+                        let start = instance_range_rel.start + brush.shader_instance_buf_offset;
+                        let end = instance_range_rel.end + brush.shader_instance_buf_offset;
+                        start..end
+                    };
+
                     // Draw it!
                     pass.set_bind_group(0, &shader.bind_group, &[brush.uniform_offset as u32]);
-                    pass.set_vertex_buffer(0, brush.instance_buffer.as_ref().unwrap().slice(..));
-                    pass.draw(0..6, instance_range);
+                    pass.draw(0..6, instance_range_abs);
                 }
             }
         }
@@ -358,8 +407,8 @@ impl QuadRenderer {
 pub struct QuadShaderOpts<'a> {
     pub debug_name: &'a str,
     pub module: &'a wgpu::ShaderModule,
-    pub vs_main: Option<&'a str>,
-    pub fs_main: Option<&'a str>,
+    pub vs_main: &'a str,
+    pub fs_main: &'a str,
     pub constants: &'a HashMap<String, f64>,
     pub instance_attributes: &'a [wgpu::VertexAttribute],
     pub instance_stride: usize,
@@ -368,8 +417,39 @@ pub struct QuadShaderOpts<'a> {
 
 // === Solid Shader === //
 
+const SOLID_SHADER_STR: &str = include_str!("shaders/solid.wgsl");
+
+#[derive(Debug, Copy, Clone, AsStd430)]
+pub struct SolidQuadUniforms {
+    pub affine_mat: Mat2,
+    pub affine_trans: Vec2,
+}
+
+#[derive(Debug, Copy, Clone, AsStd430)]
+pub struct SolidQuadInstance {
+    pub pos: Vec3,
+    pub size: Vec2,
+    pub color: Vec4,
+}
+
 pub fn create_solid_quad_shader(quad: &mut QuadRenderer) -> QuadShaderHandle {
-    todo!()
+    let module = quad
+        .device()
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("solid quad shader"),
+            source: wgpu::ShaderSource::Wgsl(SOLID_SHADER_STR.into()),
+        });
+
+    quad.create_shader(QuadShaderOpts {
+        debug_name: "solid quad",
+        module: &module,
+        vs_main: "vs_main",
+        fs_main: "fs_main",
+        constants: &HashMap::default(),
+        instance_attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4],
+        instance_stride: SolidQuadInstance::std430_size_static(),
+        uniform_stride: SolidQuadUniforms::std430_size_static(),
+    })
 }
 
 // === Gradient Shader === //
