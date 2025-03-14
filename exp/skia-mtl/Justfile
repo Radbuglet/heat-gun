@@ -1,0 +1,2 @@
+run:
+    METAL_CAPTURE_ENABLED=1 cargo run

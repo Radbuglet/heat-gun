@@ -2,8 +2,11 @@
 resolver = "2"
 members = [
     "src/hg-client",
-    "src/hg-common", "src/hg-ctx2d",
+    "src/hg-common",
+    "src/hg-ctx2d",
     "src/hg-ecs",
     "src/hg-server",
     "src/hg-utils",
 ]
+
+exclude = ["exp"]
