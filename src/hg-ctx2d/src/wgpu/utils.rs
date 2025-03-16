@@ -1,6 +1,11 @@
 use core::f32;
 use std::mem;
 
+use crevice::std430::AsStd430;
+use derive_where::derive_where;
+
+// === Depth === //
+
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DepthEpoch(pub u16);
 
@@ -49,4 +54,36 @@ impl DepthGenerator {
 pub struct Depth {
     pub epoch: DepthEpoch,
     pub value: f32,
+}
+
+// === StreamWritable === //
+
+pub trait StreamWritable {
+    fn write_to(&self, out: &mut impl Extend<u8>);
+}
+
+impl StreamWritable for [u8] {
+    fn write_to(&self, out: &mut impl Extend<u8>) {
+        out.extend(self.iter().copied());
+    }
+}
+
+#[derive(Debug)]
+#[derive_where(Copy, Clone)]
+pub struct Bytemuck<'a, T>(pub &'a T);
+
+impl<T: bytemuck::Pod> StreamWritable for Bytemuck<'_, T> {
+    fn write_to(&self, out: &mut impl Extend<u8>) {
+        bytemuck::bytes_of(self.0).write_to(out);
+    }
+}
+
+#[derive(Debug)]
+#[derive_where(Copy, Clone)]
+pub struct Crevice<'a, T>(pub &'a T);
+
+impl<T: AsStd430> StreamWritable for Crevice<'_, T> {
+    fn write_to(&self, out: &mut impl Extend<u8>) {
+        Bytemuck(&self.0.as_std430()).write_to(out);
+    }
 }

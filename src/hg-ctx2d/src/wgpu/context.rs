@@ -1,13 +1,14 @@
-use crevice::std430::AsStd430;
-use derive_where::derive_where;
 use glam::{Mat2, Vec2, Vec3, Vec4};
 use thunderdome::Index;
 
 use crate::Context;
 
-use super::quad::{
-    create_solid_quad_shader, QuadBrushHandle, QuadRenderer, QuadShaderHandle, SolidQuadInstance,
-    SolidQuadUniforms,
+use super::{
+    quad::{
+        create_solid_quad_shader, QuadBrushHandle, QuadRenderer, QuadShaderHandle,
+        SolidQuadInstance, SolidQuadUniforms,
+    },
+    utils::Crevice,
 };
 
 // === WgpuContext === //
@@ -62,37 +63,5 @@ impl Context for WgpuContext {
                 color: Vec4::new(1., 0., 1., 1.),
             }),
         );
-    }
-}
-
-// === StreamWritable === //
-
-pub trait StreamWritable {
-    fn write_to(&self, out: &mut impl Extend<u8>);
-}
-
-impl StreamWritable for [u8] {
-    fn write_to(&self, out: &mut impl Extend<u8>) {
-        out.extend(self.iter().copied());
-    }
-}
-
-#[derive(Debug)]
-#[derive_where(Copy, Clone)]
-pub struct Bytemuck<'a, T>(pub &'a T);
-
-impl<T: bytemuck::Pod> StreamWritable for Bytemuck<'_, T> {
-    fn write_to(&self, out: &mut impl Extend<u8>) {
-        bytemuck::bytes_of(self.0).write_to(out);
-    }
-}
-
-#[derive(Debug)]
-#[derive_where(Copy, Clone)]
-pub struct Crevice<'a, T>(pub &'a T);
-
-impl<T: AsStd430> StreamWritable for Crevice<'_, T> {
-    fn write_to(&self, out: &mut impl Extend<u8>) {
-        Bytemuck(&self.0.as_std430()).write_to(out);
     }
 }

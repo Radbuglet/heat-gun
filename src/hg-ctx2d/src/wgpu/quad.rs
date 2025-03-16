@@ -4,10 +4,7 @@ use crevice::std430::AsStd430;
 use glam::{Mat2, Vec2, Vec3, Vec4};
 use thunderdome::{Arena, Index};
 
-use super::{
-    context::StreamWritable,
-    utils::{DepthEpoch, DepthGenerator},
-};
+use super::utils::{DepthEpoch, DepthGenerator, StreamWritable};
 
 // === Core === //
 
