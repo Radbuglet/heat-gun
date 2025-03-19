@@ -3,10 +3,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use futures::executor::block_on;
 use glam::UVec2;
-use hg_ctx2d::{
-    wgpu::{AssetManager, WgpuContext},
-    Context as _,
-};
+use hg_ctx2d::{wgpu::WgpuContext, Context as _};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -29,7 +26,6 @@ struct App {
 
 #[derive(Debug)]
 struct AppState {
-    assets: AssetManager,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -72,8 +68,6 @@ impl ApplicationHandler for App {
                 if let Err(err) = Self::draw_surface(state) {
                     eprintln!("WARN: {err:?}");
                 }
-
-                state.assets.flush();
             }
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -123,7 +117,6 @@ impl App {
             .await?;
 
         let mut app = AppState {
-            assets: AssetManager::new(),
             adapter,
             device,
             queue,
@@ -139,7 +132,6 @@ impl App {
         Self::maybe_reconfigure_surface(&mut app);
 
         app.renderer = Some(WgpuContext::new(
-            app.assets.clone(),
             app.device.clone(),
             app.surface_format.unwrap(),
         ));

@@ -3,8 +3,12 @@ use std::{
     borrow::Borrow,
     fmt, hash,
     marker::PhantomData,
+    mem::ManuallyDrop,
     ops::Deref,
-    sync::{Arc, OnceLock, RwLock},
+    sync::{
+        atomic::{AtomicU64, Ordering::*},
+        Arc, OnceLock, RwLock, Weak,
+    },
 };
 
 use derive_where::derive_where;
@@ -20,14 +24,23 @@ pub struct AssetManager(Arc<AssetManagerInner>);
 
 #[derive(Debug, Default)]
 struct AssetManagerInner {
-    asset_map: RwLock<FxHashMap<Key, Arc<dyn Any + Send + Sync>>>,
+    asset_map: RwLock<FxHashMap<Key, Weak<dyn Any + Send + Sync>>>,
+    id_gen: AtomicU64,
 }
 
 #[derive(Debug)]
 struct Key {
     hash: u64,
+    id: u64,
     func: usize,
     value: Box<dyn AssetKeyOwned>,
+}
+
+struct Value<T> {
+    manager: Weak<AssetManagerInner>,
+    hash: u64,
+    id: u64,
+    value: OnceLock<T>,
 }
 
 impl AssetManager {
@@ -40,16 +53,17 @@ impl AssetManager {
         K: AssetKey,
         O: 'static + Send + Sync,
     {
-        let entry = self.load_entry::<K, O>(&key, loader as usize);
+        let entry = self
+            .load_entry::<K, O>(&key, loader as usize)
+            .downcast::<Value<O>>()
+            .ok()
+            .unwrap();
 
-        (&*entry as &(dyn Any + Send + Sync))
-            .downcast_ref::<OnceLock<O>>()
-            .unwrap()
-            .get_or_init(|| loader(self, context, key));
+        entry.value.get_or_init(|| loader(self, context, key));
 
         Asset {
             _ty: PhantomData,
-            entry,
+            entry: ManuallyDrop::new(entry),
         }
     }
 
@@ -75,7 +89,9 @@ impl AssetManager {
             .raw_entry()
             .from_hash(hash, |candidate| check_key(hash, func, key, candidate))
         {
-            return v.clone();
+            if let Some(v) = v.upgrade() {
+                return v;
+            }
         }
 
         drop(assets);
@@ -86,20 +102,49 @@ impl AssetManager {
             .raw_entry_mut()
             .from_hash(hash, |candidate| check_key(hash, func, key, candidate))
         {
-            hash_map::RawEntryMut::Occupied(entry) => {
-                return entry.get().clone();
+            hash_map::RawEntryMut::Occupied(mut entry) => {
+                if let Some(value) = entry.get().upgrade() {
+                    return value;
+                }
+
+                // We can't reuse the key's existing ID since a dropped `Asset` may be in the
+                // process of removing the original asset instance and we want to ensure that it
+                // doesn't delete this revived entry.
+                let id = self.0.id_gen.fetch_add(1, Relaxed);
+
+                entry.key_mut().id = id;
+
+                let value = Arc::new(Value::<O> {
+                    manager: Arc::downgrade(&self.0),
+                    hash,
+                    id,
+                    value: OnceLock::new(),
+                });
+                let value = value as Arc<dyn Any + Send + Sync>;
+
+                entry.insert(Arc::downgrade(&value));
+
+                return value;
             }
             hash_map::RawEntryMut::Vacant(entry) => {
-                let value = Arc::new(OnceLock::<O>::new());
+                let id = self.0.id_gen.fetch_add(1, Relaxed);
+                let value = Arc::new(Value::<O> {
+                    manager: Arc::downgrade(&self.0),
+                    hash,
+                    id,
+                    value: OnceLock::new(),
+                });
+                let value = value as Arc<dyn Any + Send + Sync>;
 
                 entry.insert_with_hasher(
                     hash,
                     Key {
                         hash,
+                        id,
                         func,
                         value: Box::new(key.to_owned()),
                     },
-                    value.clone(),
+                    Arc::downgrade(&value),
                     |k| k.hash,
                 );
 
@@ -108,19 +153,15 @@ impl AssetManager {
         }
     }
 
-    pub fn flush(&self) {
-        self.0
-            .asset_map
-            .write()
-            .unwrap()
-            .retain(|_k, v| Arc::strong_count(v) != 1);
+    pub fn len(&self) -> usize {
+        self.0.asset_map.read().unwrap().len()
     }
 }
 
 #[derive_where(Clone)]
 pub struct Asset<T: 'static + Send + Sync> {
     _ty: PhantomData<fn(T) -> T>,
-    entry: Arc<dyn Any + Send + Sync>,
+    entry: ManuallyDrop<Arc<Value<T>>>,
 }
 
 impl<T> hash::Hash for Asset<T>
@@ -159,12 +200,36 @@ where
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &self
-            .entry
-            .downcast_ref::<OnceLock<T>>()
-            .unwrap()
-            .get()
-            .unwrap()
+        self.entry.value.get().unwrap()
+    }
+}
+
+impl<T> Drop for Asset<T>
+where
+    T: 'static + Send + Sync,
+{
+    fn drop(&mut self) {
+        let entry = unsafe { ManuallyDrop::take(&mut self.entry) };
+
+        let Some(entry) = Arc::into_inner(entry) else {
+            // (entry still alive)
+            return;
+        };
+
+        let Some(manager) = entry.manager.upgrade() else {
+            return;
+        };
+
+        let mut map = manager.asset_map.write().unwrap();
+
+        let hash_map::RawEntryMut::Occupied(entry) = map
+            .raw_entry_mut()
+            .from_hash(entry.hash, |v| v.id == entry.id)
+        else {
+            return;
+        };
+
+        entry.remove();
     }
 }
 
