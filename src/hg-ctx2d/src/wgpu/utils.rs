@@ -1,5 +1,5 @@
 use core::f32;
-use std::mem;
+use std::{marker::PhantomData, mem};
 
 use crevice::std430::AsStd430;
 use derive_where::derive_where;
@@ -56,34 +56,79 @@ pub struct Depth {
     pub value: f32,
 }
 
-// === StreamWritable === //
+// === StreamWrites === //
 
-pub trait StreamWritable {
+pub trait StreamWritesSized: Sized {
+    fn size(&self) -> usize;
+}
+
+pub trait StreamWrites<T>: Sized {
+    fn write(value: &T, out: &mut impl Extend<u8>);
+}
+
+pub trait StreamWritable<S>: Sized {
     fn write_to(&self, out: &mut impl Extend<u8>);
 }
 
-impl StreamWritable for [u8] {
+impl<T, S> StreamWritable<S> for T
+where
+    S: StreamWrites<T>,
+{
     fn write_to(&self, out: &mut impl Extend<u8>) {
-        out.extend(self.iter().copied());
+        S::write(self, out);
     }
 }
 
-#[derive(Debug)]
-#[derive_where(Copy, Clone)]
-pub struct Bytemuck<'a, T>(pub &'a T);
+#[derive_where(Debug, Copy, Clone)]
+pub struct Bytemuck<T: bytemuck::Pod>(PhantomData<fn(T) -> T>);
 
-impl<T: bytemuck::Pod> StreamWritable for Bytemuck<'_, T> {
-    fn write_to(&self, out: &mut impl Extend<u8>) {
-        bytemuck::bytes_of(self.0).write_to(out);
+impl<T: bytemuck::Pod> Default for Bytemuck<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-#[derive(Debug)]
-#[derive_where(Copy, Clone)]
-pub struct Crevice<'a, T>(pub &'a T);
+impl<T: bytemuck::Pod> Bytemuck<T> {
+    pub const fn new() -> Self {
+        Self(PhantomData)
+    }
+}
 
-impl<T: AsStd430> StreamWritable for Crevice<'_, T> {
-    fn write_to(&self, out: &mut impl Extend<u8>) {
-        Bytemuck(&self.0.as_std430()).write_to(out);
+impl<T: bytemuck::Pod> StreamWritesSized for Bytemuck<T> {
+    fn size(&self) -> usize {
+        mem::size_of::<T>()
+    }
+}
+
+impl<T: bytemuck::Pod> StreamWrites<T> for Bytemuck<T> {
+    fn write(value: &T, out: &mut impl Extend<u8>) {
+        out.extend(bytemuck::bytes_of(value).iter().copied());
+    }
+}
+
+#[derive_where(Debug, Copy, Clone)]
+pub struct Crevice<T: AsStd430>(PhantomData<fn(T) -> T>);
+
+impl<T: AsStd430> Default for Crevice<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: AsStd430> Crevice<T> {
+    pub const fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<T: AsStd430> StreamWritesSized for Crevice<T> {
+    fn size(&self) -> usize {
+        T::std430_size_static()
+    }
+}
+
+impl<T: AsStd430> StreamWrites<T> for Crevice<T> {
+    fn write(value: &T, out: &mut impl Extend<u8>) {
+        Bytemuck::<T::Output>::write(&value.as_std430(), out);
     }
 }

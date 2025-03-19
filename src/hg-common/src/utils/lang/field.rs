@@ -50,7 +50,7 @@ impl<I, O> Field<I, O> {
         unsafe { &mut *self.apply_ptr_mut(val) }
     }
 
-    pub const fn chain<O2>(self, next: Field<O, O2>) -> Field<I, O2> {
+    pub const fn chain<P>(self, next: Field<O, P>) -> Field<I, P> {
         unsafe { Field::new_unchecked(self.offset + next.offset) }
     }
 
