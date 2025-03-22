@@ -27,11 +27,11 @@ pub struct WgpuContext {
 
 impl WgpuContext {
     pub fn new(device: wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let assets = AssetManager::new();
+        let mut assets = AssetManager::new();
         let mut renderer = InstanceRenderer::new(device.clone(), assets.clone());
         let fill_rect_shader = renderer.create_shader(
             "solid quad",
-            (*load_solid_quad_pipeline(&assets, &device, format)).clone(),
+            load_solid_quad_pipeline(&mut assets, &device, format),
             Crevice::<SolidQuadUniforms>::new(),
             Crevice::<SolidQuadInstance>::new(),
         );

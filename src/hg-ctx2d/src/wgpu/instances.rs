@@ -7,7 +7,7 @@ use hg_utils::hash::FxHashMap;
 use thunderdome::{Arena, Index};
 
 use super::{
-    assets::{Asset, AssetManager, CloneKey, ListKey},
+    assets::{Asset, AssetLoader, AssetManager, CloneKey, ListKey},
     utils::{Crevice, DepthEpoch, DepthGenerator, StreamWritable, StreamWritesSized},
 };
 
@@ -42,7 +42,7 @@ struct Shader {
     debug_name: String,
 
     // Pipeline
-    pipeline: wgpu::RenderPipeline,
+    pipeline: Asset<wgpu::RenderPipeline>,
 
     // Buffers
     uniform_bind: Option<wgpu::BindGroup>,
@@ -72,8 +72,8 @@ struct Brush {
 }
 
 impl InstanceRenderer {
-    pub fn new(device: wgpu::Device, assets: AssetManager) -> Self {
-        let uniform_bind_layout = load_uniform_buffer_bind_layout(&assets, &device);
+    pub fn new(device: wgpu::Device, mut assets: AssetManager) -> Self {
+        let uniform_bind_layout = load_uniform_buffer_bind_layout(&mut assets, &device);
 
         Self {
             device,
@@ -92,7 +92,7 @@ impl InstanceRenderer {
     pub fn create_shader<U, I>(
         &mut self,
         debug_name: impl fmt::Display,
-        pipeline: wgpu::RenderPipeline,
+        pipeline: Asset<wgpu::RenderPipeline>,
         uniform: U,
         instance: I,
     ) -> ShaderHandle<U, I>
@@ -375,7 +375,7 @@ impl InstanceRenderer {
 }
 
 pub fn load_uniform_buffer_bind_layout(
-    assets: &AssetManager,
+    assets: &mut impl AssetLoader,
     device: &wgpu::Device,
 ) -> Asset<wgpu::BindGroupLayout> {
     assets.load(device, (), |_assets, device, ()| {
@@ -396,9 +396,9 @@ pub fn load_uniform_buffer_bind_layout(
 }
 
 pub fn load_pipeline_layout(
-    assets: &AssetManager,
+    assets: &mut impl AssetLoader,
     device: &wgpu::Device,
-    layouts: &[&wgpu::BindGroupLayout],
+    layouts: &[&Asset<wgpu::BindGroupLayout>],
 ) -> Asset<wgpu::PipelineLayout> {
     assets.load(
         device,
@@ -406,7 +406,7 @@ pub fn load_pipeline_layout(
         |_assets, device, ListKey(layouts)| {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
-                bind_group_layouts: layouts,
+                bind_group_layouts: &layouts.iter().map(|v| &***v).collect::<Vec<_>>(),
                 push_constant_ranges: &[],
             })
         },
@@ -434,7 +434,7 @@ pub type SolidQuadShader = ShaderHandle<Crevice<SolidQuadUniforms>, Crevice<Soli
 pub type SolidQuadBrush = BrushHandle<Crevice<SolidQuadInstance>>;
 
 pub fn load_solid_quad_pipeline(
-    assets: &AssetManager,
+    assets: &mut impl AssetLoader,
     device: &wgpu::Device,
     texture_format: wgpu::TextureFormat,
 ) -> Asset<wgpu::RenderPipeline> {
@@ -449,13 +449,11 @@ pub fn load_solid_quad_pipeline(
                 })
             });
 
+            let layout = load_uniform_buffer_bind_layout(assets, device);
+
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("solid quad pipeline"),
-                layout: Some(&load_pipeline_layout(
-                    assets,
-                    device,
-                    &[&load_uniform_buffer_bind_layout(assets, device)],
-                )),
+                layout: Some(&load_pipeline_layout(assets, device, &[&layout])),
                 vertex: wgpu::VertexState {
                     module: &module,
                     entry_point: Some("vs_main"),

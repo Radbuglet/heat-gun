@@ -2,8 +2,6 @@ use std::{
     any::Any,
     borrow::Borrow,
     fmt, hash,
-    marker::PhantomData,
-    mem::ManuallyDrop,
     ops::Deref,
     sync::{
         atomic::{AtomicU64, Ordering::*},
@@ -15,6 +13,7 @@ use derive_where::derive_where;
 use hg_utils::{
     hash::{fx_hash_one, hash_map, FxHashMap},
     impl_tuples,
+    mem::MappedArc,
 };
 
 // === AssetManager === //
@@ -24,23 +23,54 @@ pub struct AssetManager(Arc<AssetManagerInner>);
 
 #[derive(Debug, Default)]
 struct AssetManagerInner {
-    asset_map: RwLock<FxHashMap<Key, Weak<dyn Any + Send + Sync>>>,
+    asset_map: RwLock<FxHashMap<AssetKeyErased, Weak<AssetEntry>>>,
     id_gen: AtomicU64,
 }
 
 #[derive(Debug)]
-struct Key {
+struct AssetKeyErased {
     hash: u64,
     id: u64,
     func: usize,
     value: Box<dyn AssetKeyOwned>,
 }
 
-struct Value<T> {
+type AssetEntryValue<T> = OnceLock<AssetEntryValueInner<T>>;
+
+struct AssetEntryValueInner<T> {
+    _keep_alive: Vec<AssetKeepAlive>,
+    value: T,
+}
+
+struct AssetEntry<T: ?Sized = dyn Any + Send + Sync> {
     manager: Weak<AssetManagerInner>,
     hash: u64,
     id: u64,
-    value: OnceLock<T>,
+    value: T,
+}
+
+impl<T: ?Sized> Drop for AssetEntry<T> {
+    fn drop(&mut self) {
+        let Some(manager) = self.manager.upgrade() else {
+            return;
+        };
+
+        let mut map = manager.asset_map.write().unwrap();
+
+        let hash_map::RawEntryMut::Occupied(entry) = map
+            .raw_entry_mut()
+            .from_hash(self.hash, |v| v.id == self.id)
+        else {
+            return;
+        };
+
+        // N.B. `AssetKeyErased` contains user a controlled destructor which may recursively drop
+        // other `AssetEntry` arcs. We avoid a dead-lock by dropping the map before the entry.
+        let kv = entry.remove_entry();
+        drop(map);
+        drop(manager);
+        drop(kv);
+    }
 }
 
 impl AssetManager {
@@ -48,31 +78,51 @@ impl AssetManager {
         Self::default()
     }
 
-    pub fn load<C, K, O>(&self, context: C, key: K, loader: fn(&Self, C, K) -> O) -> Asset<O>
-    where
-        K: AssetKey,
-        O: 'static + Send + Sync,
-    {
-        let entry = self
-            .load_entry::<K, O>(&key, loader as usize)
-            .downcast::<Value<O>>()
-            .ok()
-            .unwrap();
-
-        entry.value.get_or_init(|| loader(self, context, key));
-
-        Asset {
-            _ty: PhantomData,
-            entry: ManuallyDrop::new(entry),
-        }
+    pub fn len(&self) -> usize {
+        self.0.asset_map.read().unwrap().len()
     }
 
-    fn load_entry<K, O>(&self, key: &K, func: usize) -> Arc<dyn Any + Send + Sync>
+    pub fn load_untracked<C, K, O>(
+        &self,
+        context: C,
+        key: K,
+        loader: fn(&mut AssetManagerTracked, C, K) -> O,
+    ) -> Asset<O>
     where
         K: AssetKey,
         O: 'static + Send + Sync,
     {
-        fn check_key<K: AssetKey>(hash: u64, func: usize, key: &K, candidate: &Key) -> bool {
+        let entry = self.load_entry::<K, O>(&key, loader as usize);
+
+        Asset(MappedArc::new(entry, |entry| {
+            &entry
+                .value
+                .downcast_ref::<AssetEntryValue<O>>()
+                .unwrap()
+                .get_or_init(|| {
+                    let mut tracked = AssetManagerTracked::new(self.clone());
+                    let out = loader(&mut tracked, context, key);
+
+                    AssetEntryValueInner {
+                        _keep_alive: tracked.into_keep_alive(),
+                        value: out,
+                    }
+                })
+                .value
+        }))
+    }
+
+    fn load_entry<K, O>(&self, key: &K, func: usize) -> Arc<AssetEntry>
+    where
+        K: AssetKey,
+        O: 'static + Send + Sync,
+    {
+        fn check_key<K: AssetKey>(
+            hash: u64,
+            func: usize,
+            key: &K,
+            candidate: &AssetKeyErased,
+        ) -> bool {
             candidate.hash == hash
                 && candidate.func == func
                 && candidate
@@ -114,13 +164,13 @@ impl AssetManager {
 
                 entry.key_mut().id = id;
 
-                let value = Arc::new(Value::<O> {
+                let value = Arc::new(AssetEntry::<AssetEntryValue<O>> {
                     manager: Arc::downgrade(&self.0),
                     hash,
                     id,
                     value: OnceLock::new(),
                 });
-                let value = value as Arc<dyn Any + Send + Sync>;
+                let value = value as Arc<AssetEntry>;
 
                 entry.insert(Arc::downgrade(&value));
 
@@ -128,17 +178,17 @@ impl AssetManager {
             }
             hash_map::RawEntryMut::Vacant(entry) => {
                 let id = self.0.id_gen.fetch_add(1, Relaxed);
-                let value = Arc::new(Value::<O> {
+                let value = Arc::new(AssetEntry::<AssetEntryValue<O>> {
                     manager: Arc::downgrade(&self.0),
                     hash,
                     id,
                     value: OnceLock::new(),
                 });
-                let value = value as Arc<dyn Any + Send + Sync>;
+                let value = value as Arc<AssetEntry>;
 
                 entry.insert_with_hasher(
                     hash,
-                    Key {
+                    AssetKeyErased {
                         hash,
                         id,
                         func,
@@ -152,84 +202,193 @@ impl AssetManager {
             }
         }
     }
+}
 
-    pub fn len(&self) -> usize {
-        self.0.asset_map.read().unwrap().len()
+pub trait AssetLoader: Sized {
+    fn push_keep_alive(&mut self, keep_alive: &AssetKeepAlive);
+
+    fn manager(&self) -> &AssetManager;
+
+    fn load_untracked<C, K, O>(
+        &self,
+        context: C,
+        key: K,
+        loader: fn(&mut AssetManagerTracked, C, K) -> O,
+    ) -> Asset<O>
+    where
+        K: AssetKey,
+        O: 'static + Send + Sync,
+    {
+        self.manager().load_untracked(context, key, loader)
+    }
+
+    fn load<C, K, O>(
+        &mut self,
+        context: C,
+        key: K,
+        loader: fn(&mut AssetManagerTracked, C, K) -> O,
+    ) -> Asset<O>
+    where
+        K: AssetKey,
+        O: 'static + Send + Sync,
+    {
+        let asset = self.load_untracked(context, key, loader);
+        self.push_keep_alive(asset.keep_alive());
+        asset
     }
 }
+
+impl AssetLoader for AssetManager {
+    fn push_keep_alive(&mut self, _keep_alive: &AssetKeepAlive) {}
+
+    fn manager(&self) -> &AssetManager {
+        self
+    }
+}
+
+#[derive(Debug)]
+pub struct AssetManagerTracked {
+    manager: AssetManager,
+    keep_alive: Vec<AssetKeepAlive>,
+}
+
+impl AssetManagerTracked {
+    pub fn new(manager: AssetManager) -> Self {
+        Self {
+            manager,
+            keep_alive: Vec::new(),
+        }
+    }
+
+    pub fn keep_alive(&self) -> &[AssetKeepAlive] {
+        &self.keep_alive
+    }
+
+    pub fn into_keep_alive(self) -> Vec<AssetKeepAlive> {
+        self.keep_alive
+    }
+}
+
+impl AssetLoader for AssetManagerTracked {
+    fn push_keep_alive(&mut self, keep_alive: &AssetKeepAlive) {
+        self.keep_alive.push(keep_alive.clone());
+    }
+
+    fn manager(&self) -> &AssetManager {
+        &self.manager
+    }
+}
+
+// === Asset === //
 
 #[derive_where(Clone)]
-pub struct Asset<T: 'static + Send + Sync> {
-    _ty: PhantomData<fn(T) -> T>,
-    entry: ManuallyDrop<Arc<Value<T>>>,
-}
+pub struct Asset<T: ?Sized>(MappedArc<AssetEntry, T>);
 
-impl<T> hash::Hash for Asset<T>
-where
-    T: 'static + Send + Sync,
-{
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.entry).hash(state);
-    }
-}
-
-impl<T> Eq for Asset<T> where T: 'static + Send + Sync {}
-
-impl<T> PartialEq for Asset<T>
-where
-    T: 'static + Send + Sync,
-{
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.entry, &other.entry)
-    }
-}
-
-impl<T> fmt::Debug for Asset<T>
-where
-    T: 'static + Send + Sync + fmt::Debug,
-{
+impl<T: ?Sized + fmt::Debug> fmt::Debug for Asset<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Asset").field(&**self).finish()
+        f.debug_struct("Asset")
+            .field("id", &MappedArc::original(&self.0).id)
+            .field("value", &<MappedArc<_, _> as Deref>::deref(&self.0))
+            .finish()
     }
 }
 
-impl<T> Deref for Asset<T>
-where
-    T: 'static + Send + Sync,
-{
+impl<T: ?Sized> hash::Hash for Asset<T> {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(MappedArc::original(&self.0)).hash(state);
+    }
+}
+
+impl<T: ?Sized> Eq for Asset<T> {}
+
+impl<T: ?Sized> PartialEq for Asset<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(MappedArc::original(&self.0), MappedArc::original(&other.0))
+    }
+}
+
+impl<T: ?Sized> Deref for Asset<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        self.entry.value.get().unwrap()
+        &self.0
     }
 }
 
-impl<T> Drop for Asset<T>
-where
-    T: 'static + Send + Sync,
-{
-    fn drop(&mut self) {
-        let entry = unsafe { ManuallyDrop::take(&mut self.entry) };
+impl<T: ?Sized> Borrow<AssetKeepAlive> for Asset<T> {
+    fn borrow(&self) -> &AssetKeepAlive {
+        self.keep_alive()
+    }
+}
 
-        let Some(entry) = Arc::into_inner(entry) else {
-            // (entry still alive)
-            return;
-        };
+impl<T: ?Sized> Asset<T> {
+    pub fn new_untracked(value: T) -> Self
+    where
+        T: 'static + Sized + Send + Sync,
+    {
+        Asset(MappedArc::new(
+            Arc::new(AssetEntry::<AssetEntryValue<T>> {
+                manager: Weak::default(),
+                hash: 0,
+                id: 0,
+                value: OnceLock::from(AssetEntryValueInner {
+                    _keep_alive: Vec::new(),
+                    value,
+                }),
+            }),
+            |v| {
+                &v.value
+                    .downcast_ref::<AssetEntryValue<T>>()
+                    .unwrap()
+                    .get()
+                    .unwrap()
+                    .value
+            },
+        ))
+    }
 
-        let Some(manager) = entry.manager.upgrade() else {
-            return;
-        };
+    pub fn try_map<V: ?Sized, E>(
+        me: Self,
+        map: impl FnOnce(&T) -> Result<&V, E>,
+    ) -> Result<Asset<V>, (Asset<T>, E)> {
+        match MappedArc::try_map(me.0, map) {
+            Ok(v) => Ok(Asset(v)),
+            Err((v, e)) => Err((Asset(v), e)),
+        }
+    }
 
-        let mut map = manager.asset_map.write().unwrap();
+    pub fn map<V: ?Sized>(me: Self, map: impl FnOnce(&T) -> &V) -> Asset<V> {
+        Asset(MappedArc::map(me.0, map))
+    }
 
-        let hash_map::RawEntryMut::Occupied(entry) = map
-            .raw_entry_mut()
-            .from_hash(entry.hash, |v| v.id == entry.id)
-        else {
-            return;
-        };
+    pub fn keep_alive(&self) -> &AssetKeepAlive {
+        unsafe {
+            &*(MappedArc::original(&self.0) as *const Arc<AssetEntry> as *const AssetKeepAlive)
+        }
+    }
+}
 
-        entry.remove();
+#[derive(Clone)]
+#[repr(transparent)]
+pub struct AssetKeepAlive(Arc<AssetEntry>);
+
+impl fmt::Debug for AssetKeepAlive {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("AssetKeepAlive").field(&self.0.id).finish()
+    }
+}
+
+impl hash::Hash for AssetKeepAlive {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
+
+impl Eq for AssetKeepAlive {}
+
+impl PartialEq for AssetKeepAlive {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 

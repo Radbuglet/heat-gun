@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+derive-where = "1.2.7"
 hashbrown = "0.15.2"
 rustc-hash = "2.1.0"
 smallbox = "0.8.6"
