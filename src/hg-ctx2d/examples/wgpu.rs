@@ -3,7 +3,6 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use futures::executor::block_on;
 use glam::UVec2;
-use hg_ctx2d::{wgpu::WgpuContext, Context as _};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -34,8 +33,6 @@ struct AppState {
     surface: wgpu::Surface<'static>,
     surface_size: UVec2,
     surface_format: Option<wgpu::TextureFormat>,
-
-    renderer: Option<WgpuContext>,
 }
 
 impl ApplicationHandler for App {
@@ -125,16 +122,10 @@ impl App {
             surface,
             surface_size: UVec2::new(u32::MAX, u32::MAX),
             surface_format: None,
-            renderer: None,
         };
 
         app.window.set_visible(true);
         Self::maybe_reconfigure_surface(&mut app);
-
-        app.renderer = Some(WgpuContext::new(
-            app.device.clone(),
-            app.surface_format.unwrap(),
-        ));
 
         Ok(app)
     }
@@ -143,12 +134,6 @@ impl App {
         Self::maybe_reconfigure_surface(state);
 
         state.device.start_capture();
-
-        let renderer = state.renderer.as_mut().unwrap();
-        renderer.reset();
-        renderer.fill_rect(0.0, 0.0, 0.1, 0.1);
-        renderer.fill_rect(0.2, 0.3, 0.05, 0.1);
-        renderer.prepare(&state.queue);
 
         let frame = state.surface.get_current_texture()?;
 
@@ -160,7 +145,7 @@ impl App {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &frame_view,
@@ -180,8 +165,6 @@ impl App {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-
-        renderer.render(&mut pass);
 
         drop(pass);
 

@@ -192,7 +192,7 @@ impl AssetManager {
                         hash,
                         id,
                         func,
-                        value: Box::new(key.to_owned()),
+                        value: Box::new(key.to_owned_key()),
                     },
                     Arc::downgrade(&value),
                     |k| k.hash,
@@ -397,9 +397,21 @@ impl PartialEq for AssetKeepAlive {
 pub trait AssetKey: hash::Hash {
     type Owned: AssetKeyOwned;
 
-    fn to_owned(&self) -> Self::Owned;
+    fn to_owned_key(&self) -> Self::Owned;
 
     fn matches(&self, owned: &Self::Owned) -> bool;
+}
+
+impl<T: ?Sized + AssetKey> AssetKey for &'_ T {
+    type Owned = T::Owned;
+
+    fn to_owned_key(&self) -> Self::Owned {
+        (**self).to_owned_key()
+    }
+
+    fn matches(&self, owned: &Self::Owned) -> bool {
+        (*self).matches(owned)
+    }
 }
 
 #[derive(Debug, Copy, Clone, Hash)]
@@ -412,7 +424,7 @@ where
 {
     type Owned = T::Owned;
 
-    fn to_owned(&self) -> Self::Owned {
+    fn to_owned_key(&self) -> Self::Owned {
         self.0.to_owned()
     }
 
@@ -431,7 +443,7 @@ where
 {
     type Owned = T::Owned;
 
-    fn to_owned(&self) -> Self::Owned {
+    fn to_owned_key(&self) -> Self::Owned {
         self.0.to_owned()
     }
 
@@ -450,7 +462,7 @@ where
 {
     type Owned = Vec<T::Owned>;
 
-    fn to_owned(&self) -> Self::Owned {
+    fn to_owned_key(&self) -> Self::Owned {
         self.0.iter().map(|v| (*v).to_owned()).collect()
     }
 
@@ -471,8 +483,8 @@ macro_rules! impl_asset_key {
         impl<$($name: AssetKey),*> AssetKey for ($($name,)*) {
             type Owned = ($($name::Owned,)*);
 
-            fn to_owned(&self) -> Self::Owned {
-                ($(self.$field.to_owned(),)*)
+            fn to_owned_key(&self) -> Self::Owned {
+                ($(self.$field.to_owned_key(),)*)
             }
 
             fn matches(&self, #[allow(unused)] owned: &Self::Owned) -> bool {
