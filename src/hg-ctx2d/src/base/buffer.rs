@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     ops::Range,
     sync::{mpsc, Mutex},
 };
@@ -8,23 +7,17 @@ use hg_utils::hash::FxHashMap;
 use smallvec::SmallVec;
 use thunderdome::{Arena, Index};
 
-use crate::{PositionedVecWriter, StreamWrite, StreamWriter};
+use crate::base::{SliceStream, StreamWriter};
+
+use super::{GfxContext, PositionedVecWriter, StreamWrite};
 
 // === DynamicBufferManager === //
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
-pub enum DynamicBufferMode {
-    /// A buffer which supports all dynamic buffer manipulation operations but requires the
-    /// operations to be aligned to the [`wgpu::COPY_BUFFER_ALIGNMENT`] copy alignment limit.
-    Blind,
-
-    /// A buffer which supports all dynamic buffer manipulation operations at arbitrary offsets at
-    /// the expense of maintaining a CPU-local copy of the data.
-    Mirrored,
-
-    /// Automatically choses between `DynamicBlind` and `DynamicMirrored` depending on the minimum
-    /// alignment needed for dynamic accesses.
-    Auto { align: wgpu::BufferAddress },
+#[derive(Debug, Clone)]
+pub struct DynamicBufferOpts<'a> {
+    pub label: Option<&'a str>,
+    pub maintain_cpu_copy: bool,
+    pub usages: wgpu::BufferUsages,
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
@@ -32,14 +25,14 @@ pub struct DynamicBufferHandle(pub Index);
 
 #[derive(Debug)]
 pub struct DynamicBufferManager {
-    device: wgpu::Device,
+    gfx: GfxContext,
     belt: ChunkStagingBelt,
     buffers: Arena<DynamicBuffer>,
 }
 
 #[derive(Debug)]
 struct DynamicBuffer {
-    label: Option<Cow<'static, str>>,
+    label: Option<String>,
     usages: wgpu::BufferUsages,
 
     /// The active length of the buffer w.r.t un-flushed modifications.
@@ -62,34 +55,31 @@ struct DynamicBuffer {
 }
 
 impl DynamicBufferManager {
-    pub fn new(device: wgpu::Device) -> Self {
+    pub fn new(gfx: GfxContext) -> Self {
         Self {
-            device,
+            gfx,
             belt: ChunkStagingBelt::new(1 << 16),
             buffers: Arena::new(),
         }
     }
 
-    pub fn create(
-        &mut self,
-        label: Option<Cow<'static, str>>,
-        mode: DynamicBufferMode,
-        usages: wgpu::BufferUsages,
-    ) -> DynamicBufferHandle {
-        let needs_local_copy = match mode {
-            DynamicBufferMode::Blind => false,
-            DynamicBufferMode::Mirrored => true,
-            DynamicBufferMode::Auto { align } => align < wgpu::COPY_BUFFER_ALIGNMENT,
-        };
+    pub fn create(&mut self, opts: DynamicBufferOpts<'_>) -> DynamicBufferHandle {
+        let DynamicBufferOpts {
+            label,
+            maintain_cpu_copy,
+            usages,
+        } = opts;
+
+        assert!(usages.contains(wgpu::BufferUsages::COPY_DST));
 
         DynamicBufferHandle(self.buffers.insert(DynamicBuffer {
-            label,
+            label: label.map(|v| v.to_string()),
             usages,
             target_len: 0,
             buffer_len: 0,
             buffer: None,
             writer: ChunkBufferWriter::new(),
-            local_copy: needs_local_copy.then_some(Vec::new()),
+            local_copy: maintain_cpu_copy.then_some(Vec::new()),
         }))
     }
 
@@ -110,7 +100,7 @@ impl DynamicBufferManager {
         buffer: DynamicBufferHandle,
         offset: wgpu::BufferAddress,
         data: &impl StreamWrite,
-    ) {
+    ) -> u64 {
         let state = &mut self.buffers[buffer.0];
 
         // Update the CPU copy if necessary
@@ -124,16 +114,18 @@ impl DynamicBufferManager {
         // Use a staging buffer to write into a buffer directly.
         let written = state
             .writer
-            .write(&self.device, &mut self.belt, state.target_len, data);
+            .write(&self.gfx.device, &mut self.belt, state.target_len, data);
 
         state.target_len = state.target_len.max(offset + written);
+
+        written
     }
 
-    pub fn push(&mut self, buffer: DynamicBufferHandle, data: &impl StreamWrite) {
-        self.write(buffer, self.len(buffer), data);
+    pub fn extend(&mut self, buffer: DynamicBufferHandle, data: &impl StreamWrite) -> u64 {
+        self.write(buffer, self.len(buffer), data)
     }
 
-    pub fn truncate(&mut self, buffer: DynamicBufferHandle, to: wgpu::BufferAddress) {
+    pub fn truncate_to(&mut self, buffer: DynamicBufferHandle, to: wgpu::BufferAddress) {
         let state = &mut self.buffers[buffer.0];
 
         // Adjust virtual length
@@ -144,8 +136,87 @@ impl DynamicBufferManager {
         state.buffer_len = state.buffer_len.min(to);
     }
 
+    pub fn truncate_by(&mut self, buffer: DynamicBufferHandle, by: wgpu::BufferAddress) {
+        self.truncate_to(buffer, self.len(buffer) - by);
+    }
+
+    pub fn copy_using_local(
+        &mut self,
+        src_buffer: DynamicBufferHandle,
+        src_offset: wgpu::BufferAddress,
+        dst_buffer: DynamicBufferHandle,
+        dst_offset: wgpu::BufferAddress,
+        size: wgpu::BufferAddress,
+    ) {
+        const NO_COPY_ERR: &str = "source buffer does not maintain a CPU-local copy";
+
+        let src_offset = usize::try_from(src_offset).unwrap();
+        let dst_offset = usize::try_from(dst_offset).unwrap();
+        let size = usize::try_from(size).unwrap();
+
+        if src_buffer == dst_buffer {
+            let state = &mut self.buffers[src_buffer.0];
+
+            let local_copy = state.local_copy.as_mut().expect(NO_COPY_ERR);
+
+            local_copy.copy_within(src_offset..(src_offset + size), dst_offset);
+
+            // Use a staging buffer to write into a buffer directly.
+            state.writer.write(
+                &self.gfx.device,
+                &mut self.belt,
+                state.target_len,
+                &SliceStream(&local_copy[src_offset..][..size]),
+            );
+
+            state.target_len = state
+                .target_len
+                .max((dst_offset + size) as wgpu::BufferAddress);
+        } else {
+            let (Some(src_state), Some(dst_state)) =
+                self.buffers.get2_mut(src_buffer.0, dst_buffer.0)
+            else {
+                panic!();
+            };
+
+            let src_local_copy = src_state.local_copy.as_mut().expect(NO_COPY_ERR);
+
+            // Update the local copy if applicable.
+            if let Some(dst_local_copy) = &mut dst_state.local_copy {
+                dst_local_copy[dst_offset..][..size]
+                    .copy_from_slice(&src_local_copy[src_offset..][..size]);
+            }
+
+            // Use a staging buffer to write into a buffer directly.
+            dst_state.writer.write(
+                &self.gfx.device,
+                &mut self.belt,
+                dst_state.target_len,
+                &SliceStream(&src_local_copy[src_offset..][..size]),
+            );
+
+            dst_state.target_len = dst_state
+                .target_len
+                .max((dst_offset + size) as wgpu::BufferAddress);
+        }
+    }
+
+    pub fn swap_remove_using_local(
+        &mut self,
+        buffer: DynamicBufferHandle,
+        offset: wgpu::BufferAddress,
+        size: wgpu::BufferAddress,
+    ) {
+        self.copy_using_local(buffer, self.len(buffer) - size, buffer, offset, size);
+        self.truncate_by(buffer, size);
+    }
+
     pub fn clear(&mut self, buffer: DynamicBufferHandle) {
-        self.truncate(buffer, 0);
+        self.truncate_to(buffer, 0);
+    }
+
+    pub fn local_mirror(&self, buffer: DynamicBufferHandle) -> &[u8] {
+        self.buffers[buffer.0].local_copy.as_deref().unwrap()
     }
 
     pub fn flush(&mut self, encoder: &mut wgpu::CommandEncoder) {
@@ -157,7 +228,7 @@ impl DynamicBufferManager {
                 .is_none_or(|buffer| buffer.size() < state.target_len)
             {
                 let new_size = state.target_len; // TODO: Better sizing strategy
-                let new_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                let new_buffer = self.gfx.device.create_buffer(&wgpu::BufferDescriptor {
                     label: state.label.as_deref(),
                     size: new_size,
                     usage: state.usages,
@@ -182,6 +253,10 @@ impl DynamicBufferManager {
 
             state.buffer_len = state.target_len;
         }
+    }
+
+    pub fn buffer(&self, buffer: DynamicBufferHandle) -> &wgpu::Buffer {
+        self.buffers[buffer.0].buffer.as_ref().unwrap()
     }
 }
 
@@ -349,7 +424,11 @@ impl ChunkBufferWriter {
         target: &wgpu::Buffer,
         local_copy: Option<&[u8]>,
     ) {
-        for (chunk_base, chunk) in self.chunks.drain() {
+        for (chunk_base, mut chunk) in self.chunks.drain() {
+            chunk.buffer.unmap();
+
+            chunk.intervals.sort_by(|a, b| a.start.cmp(&b.start));
+
             // TODO: Coalesce intervals with small gaps between them if we have a local copy
             //  available to us? In the same step, align buffer with `local_copy` if unaligned.
 

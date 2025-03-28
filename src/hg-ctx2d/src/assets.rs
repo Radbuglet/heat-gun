@@ -1,7 +1,8 @@
 use std::{
     any::Any,
     borrow::Borrow,
-    fmt, hash,
+    fmt,
+    hash::{self, Hash},
     ops::Deref,
     sync::{
         atomic::{AtomicU64, Ordering::*},
@@ -129,10 +130,10 @@ impl AssetManager {
                     .value
                     .as_any()
                     .downcast_ref::<K::Owned>()
-                    .is_some_and(|v| key.matches(v))
+                    .is_some_and(|v| key.matches_key(v))
         }
 
-        let hash = fx_hash_one((func, &key));
+        let hash = fx_hash_one((func, AssetKeyHashAdapter(&key)));
 
         let assets = self.0.asset_map.read().unwrap();
         if let Some((_k, v)) = assets
@@ -394,42 +395,54 @@ impl PartialEq for AssetKeepAlive {
 
 // === AssetManager Keys === //
 
-pub trait AssetKey: hash::Hash {
+pub trait AssetKeyOwned: 'static + fmt::Debug + Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl<T> AssetKeyOwned for T
+where
+    T: 'static + fmt::Debug + Send + Sync,
+{
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+pub trait AssetKey: Sized {
     type Owned: AssetKeyOwned;
 
-    fn to_owned_key(&self) -> Self::Owned;
+    fn delegated(&self) -> impl AssetKey<Owned = Self::Owned> + '_;
 
-    fn matches(&self, owned: &Self::Owned) -> bool;
+    fn hash_key(&self, state: &mut impl hash::Hasher) {
+        self.delegated().hash_key(state);
+    }
+
+    fn to_owned_key(&self) -> Self::Owned {
+        self.delegated().to_owned_key()
+    }
+
+    fn matches_key(&self, owned: &Self::Owned) -> bool {
+        self.delegated().matches_key(owned)
+    }
 }
 
 impl<T: ?Sized + AssetKey> AssetKey for &'_ T {
     type Owned = T::Owned;
 
+    fn delegated(&self) -> impl AssetKey<Owned = Self::Owned> + '_ {
+        *self
+    }
+
+    fn hash_key(&self, state: &mut impl hash::Hasher) {
+        (**self).hash_key(state);
+    }
+
     fn to_owned_key(&self) -> Self::Owned {
         (**self).to_owned_key()
     }
 
-    fn matches(&self, owned: &Self::Owned) -> bool {
-        (*self).matches(owned)
-    }
-}
-
-#[derive(Debug, Copy, Clone, Hash)]
-pub struct CloneKey<T>(pub T);
-
-impl<T> AssetKey for CloneKey<T>
-where
-    T: hash::Hash + Eq + ToOwned,
-    T::Owned: 'static + fmt::Debug + Send + Sync,
-{
-    type Owned = T::Owned;
-
-    fn to_owned_key(&self) -> Self::Owned {
-        self.0.to_owned()
-    }
-
-    fn matches(&self, owned: &Self::Owned) -> bool {
-        &self.0 == owned.borrow()
+    fn matches_key(&self, owned: &Self::Owned) -> bool {
+        (*self).matches_key(owned)
     }
 }
 
@@ -443,11 +456,19 @@ where
 {
     type Owned = T::Owned;
 
+    fn delegated(&self) -> impl AssetKey<Owned = Self::Owned> + '_ {
+        self
+    }
+
+    fn hash_key(&self, state: &mut impl hash::Hasher) {
+        self.hash(state);
+    }
+
     fn to_owned_key(&self) -> Self::Owned {
         self.0.to_owned()
     }
 
-    fn matches(&self, owned: &Self::Owned) -> bool {
+    fn matches_key(&self, owned: &Self::Owned) -> bool {
         self.0 == owned.borrow()
     }
 }
@@ -462,11 +483,19 @@ where
 {
     type Owned = Vec<T::Owned>;
 
+    fn delegated(&self) -> impl AssetKey<Owned = Self::Owned> + '_ {
+        self
+    }
+
+    fn hash_key(&self, state: &mut impl hash::Hasher) {
+        self.hash(state);
+    }
+
     fn to_owned_key(&self) -> Self::Owned {
         self.0.iter().map(|v| (*v).to_owned()).collect()
     }
 
-    fn matches(&self, owned: &Self::Owned) -> bool {
+    fn matches_key(&self, owned: &Self::Owned) -> bool {
         if self.0.len() != owned.len() {
             return false;
         }
@@ -483,12 +512,20 @@ macro_rules! impl_asset_key {
         impl<$($name: AssetKey),*> AssetKey for ($($name,)*) {
             type Owned = ($($name::Owned,)*);
 
+            fn delegated(&self) -> impl AssetKey<Owned = Self::Owned> + '_ {
+                self
+            }
+
+            fn hash_key(&self, #[allow(unused)] state: &mut impl hash::Hasher) {
+                $(self.$field.hash_key(state);)*
+            }
+
             fn to_owned_key(&self) -> Self::Owned {
                 ($(self.$field.to_owned_key(),)*)
             }
 
-            fn matches(&self, #[allow(unused)] owned: &Self::Owned) -> bool {
-                $(self.$field.matches(&owned.$field) && )* true
+            fn matches_key(&self, #[allow(unused)] owned: &Self::Owned) -> bool {
+                $(self.$field.matches_key(&owned.$field) && )* true
             }
         }
     };
@@ -496,15 +533,10 @@ macro_rules! impl_asset_key {
 
 impl_tuples!(impl_asset_key);
 
-pub trait AssetKeyOwned: 'static + fmt::Debug + Send + Sync {
-    fn as_any(&self) -> &dyn Any;
-}
+struct AssetKeyHashAdapter<'a, T>(&'a T);
 
-impl<T> AssetKeyOwned for T
-where
-    T: 'static + fmt::Debug + Send + Sync,
-{
-    fn as_any(&self) -> &dyn Any {
-        self
+impl<T: AssetKey> hash::Hash for AssetKeyHashAdapter<'_, T> {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        self.0.hash_key(state);
     }
 }

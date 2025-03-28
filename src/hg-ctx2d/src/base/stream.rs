@@ -1,61 +1,7 @@
-use std::{f32, mem};
+use std::mem;
 
 use crevice::std430::AsStd430;
 use derive_where::derive_where;
-
-// === Depth === //
-
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct DepthEpoch(pub u16);
-
-#[derive(Debug, Clone)]
-pub struct DepthGenerator {
-    pub epoch: DepthEpoch,
-    pub value: u32,
-}
-
-impl Default for DepthGenerator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl DepthGenerator {
-    pub const fn new() -> Self {
-        Self {
-            epoch: DepthEpoch(0),
-            value: 0,
-        }
-    }
-
-    pub fn reset(&mut self) {
-        mem::take(self);
-    }
-
-    pub fn curr(&self) -> Depth {
-        Depth {
-            epoch: self.epoch,
-            value: f32::from_bits(self.value),
-        }
-    }
-
-    pub fn next(&mut self) {
-        self.value += 1;
-
-        if self.value > 1.0f32.to_bits() {
-            self.value = 0;
-            self.epoch.0 += 1;
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct Depth {
-    pub epoch: DepthEpoch,
-    pub value: f32,
-}
-
-// === StreamWrites === //
 
 pub trait StreamWrite: Sized {
     fn write_to(&self, out: &mut (impl ?Sized + StreamWriter));
@@ -81,6 +27,21 @@ impl StreamWriter for PositionedVecWriter<'_> {
 
         self.target[self.start..].copy_from_slice(data_overlapped);
         self.target.extend_from_slice(data_extend);
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct SliceStream<'a>(pub &'a [u8]);
+
+impl StreamWrite for SliceStream<'_> {
+    fn write_to(&self, out: &mut (impl ?Sized + StreamWriter)) {
+        out.write(self.0);
+    }
+}
+
+impl StreamWriteSized for SliceStream<'_> {
+    fn len(&self) -> usize {
+        self.0.len()
     }
 }
 
