@@ -3,6 +3,7 @@ use std::{
     borrow::Borrow,
     fmt,
     hash::{self, Hash},
+    mem,
     ops::Deref,
     sync::{
         atomic::{AtomicU64, Ordering::*},
@@ -83,6 +84,33 @@ impl AssetManager {
         self.0.asset_map.read().unwrap().len()
     }
 
+    pub fn fetch_untracked<C, K, O>(
+        &self,
+        key: K,
+        loader: fn(&mut AssetManagerTracked, C, K) -> O,
+    ) -> Option<Asset<O>>
+    where
+        K: AssetKey,
+        O: 'static + Send + Sync,
+    {
+        self.fetch_entry::<K>(&key, loader as usize, Self::hash_key(&key, loader as usize))
+            .and_then(|entry| {
+                MappedArc::try_new(entry, |entry| {
+                    Result::<_, ()>::Ok(
+                        &entry
+                            .value
+                            .downcast_ref::<AssetEntryValue<O>>()
+                            .unwrap()
+                            .get()
+                            .ok_or(())?
+                            .value,
+                    )
+                })
+                .ok()
+            })
+            .map(Asset)
+    }
+
     pub fn load_untracked<C, K, O>(
         &self,
         context: C,
@@ -113,46 +141,50 @@ impl AssetManager {
         }))
     }
 
+    fn hash_key<K: AssetKey>(key: &K, func: usize) -> u64 {
+        fx_hash_one((func, AssetKeyHashAdapter(&key)))
+    }
+
+    fn check_key<K: AssetKey>(hash: u64, func: usize, key: &K, candidate: &AssetKeyErased) -> bool {
+        candidate.hash == hash
+            && candidate.func == func
+            && candidate
+                .value
+                .as_any()
+                .downcast_ref::<K::Owned>()
+                .is_some_and(|v| key.matches_key(v))
+    }
+
+    fn fetch_entry<K: AssetKey>(&self, key: &K, func: usize, hash: u64) -> Option<Arc<AssetEntry>> {
+        self.0
+            .asset_map
+            .read()
+            .unwrap()
+            .raw_entry()
+            .from_hash(hash, |candidate| {
+                Self::check_key(hash, func, key, candidate)
+            })
+            .and_then(|(_k, v)| v.upgrade())
+    }
+
     fn load_entry<K, O>(&self, key: &K, func: usize) -> Arc<AssetEntry>
     where
         K: AssetKey,
         O: 'static + Send + Sync,
     {
-        fn check_key<K: AssetKey>(
-            hash: u64,
-            func: usize,
-            key: &K,
-            candidate: &AssetKeyErased,
-        ) -> bool {
-            candidate.hash == hash
-                && candidate.func == func
-                && candidate
-                    .value
-                    .as_any()
-                    .downcast_ref::<K::Owned>()
-                    .is_some_and(|v| key.matches_key(v))
+        let hash = Self::hash_key(key, func);
+
+        // Fast path: reuse an existing entry
+        if let Some(entry) = self.fetch_entry(key, func, hash) {
+            return entry;
         }
 
-        let hash = fx_hash_one((func, AssetKeyHashAdapter(&key)));
-
-        let assets = self.0.asset_map.read().unwrap();
-        if let Some((_k, v)) = assets
-            .raw_entry()
-            .from_hash(hash, |candidate| check_key(hash, func, key, candidate))
-        {
-            if let Some(v) = v.upgrade() {
-                return v;
-            }
-        }
-
-        drop(assets);
-
+        // Slow path: insert a new entry
         let mut assets = self.0.asset_map.write().unwrap();
 
-        match assets
-            .raw_entry_mut()
-            .from_hash(hash, |candidate| check_key(hash, func, key, candidate))
-        {
+        match assets.raw_entry_mut().from_hash(hash, |candidate| {
+            Self::check_key(hash, func, key, candidate)
+        }) {
             hash_map::RawEntryMut::Occupied(mut entry) => {
                 if let Some(value) = entry.get().upgrade() {
                     return value;
@@ -205,22 +237,38 @@ impl AssetManager {
     }
 }
 
+// === AssetLoader === //
+
+#[derive(Debug, Copy, Clone)]
+pub enum AssetLoadInfallible {}
+
 pub trait AssetLoader: Sized {
-    fn push_keep_alive(&mut self, keep_alive: &AssetKeepAlive);
+    type Error;
 
     fn manager(&self) -> &AssetManager;
 
-    fn load_untracked<C, K, O>(
-        &self,
+    fn push_keep_alive(&mut self, keep_alive: &AssetKeepAlive);
+
+    fn load<C, K, O>(
+        &mut self,
         context: C,
         key: K,
         loader: fn(&mut AssetManagerTracked, C, K) -> O,
-    ) -> Asset<O>
+    ) -> Result<Asset<O>, Self::Error>
     where
         K: AssetKey,
-        O: 'static + Send + Sync,
-    {
-        self.manager().load_untracked(context, key, loader)
+        O: 'static + Send + Sync;
+}
+
+impl AssetLoader for AssetManager {
+    type Error = AssetLoadInfallible;
+
+    fn manager(&self) -> &AssetManager {
+        self
+    }
+
+    fn push_keep_alive(&mut self, keep_alive: &AssetKeepAlive) {
+        let _ = keep_alive;
     }
 
     fn load<C, K, O>(
@@ -228,22 +276,12 @@ pub trait AssetLoader: Sized {
         context: C,
         key: K,
         loader: fn(&mut AssetManagerTracked, C, K) -> O,
-    ) -> Asset<O>
+    ) -> Result<Asset<O>, Self::Error>
     where
         K: AssetKey,
         O: 'static + Send + Sync,
     {
-        let asset = self.load_untracked(context, key, loader);
-        self.push_keep_alive(asset.keep_alive());
-        asset
-    }
-}
-
-impl AssetLoader for AssetManager {
-    fn push_keep_alive(&mut self, _keep_alive: &AssetKeepAlive) {}
-
-    fn manager(&self) -> &AssetManager {
-        self
+        Ok(self.load_untracked(context, key, loader))
     }
 }
 
@@ -271,12 +309,29 @@ impl AssetManagerTracked {
 }
 
 impl AssetLoader for AssetManagerTracked {
+    type Error = AssetLoadInfallible;
+
+    fn manager(&self) -> &AssetManager {
+        &self.manager
+    }
+
     fn push_keep_alive(&mut self, keep_alive: &AssetKeepAlive) {
         self.keep_alive.push(keep_alive.clone());
     }
 
-    fn manager(&self) -> &AssetManager {
-        &self.manager
+    fn load<C, K, O>(
+        &mut self,
+        context: C,
+        key: K,
+        loader: fn(&mut AssetManagerTracked, C, K) -> O,
+    ) -> Result<Asset<O>, Self::Error>
+    where
+        K: AssetKey,
+        O: 'static + Send + Sync,
+    {
+        let asset = self.manager().load_untracked(context, key, loader);
+        self.push_keep_alive(Asset::keep_alive(&asset));
+        Ok(asset)
     }
 }
 
@@ -318,7 +373,7 @@ impl<T: ?Sized> Deref for Asset<T> {
 
 impl<T: ?Sized> Borrow<AssetKeepAlive> for Asset<T> {
     fn borrow(&self) -> &AssetKeepAlive {
-        self.keep_alive()
+        Self::keep_alive(self)
     }
 }
 
@@ -362,10 +417,12 @@ impl<T: ?Sized> Asset<T> {
         Asset(MappedArc::map(me.0, map))
     }
 
-    pub fn keep_alive(&self) -> &AssetKeepAlive {
-        unsafe {
-            &*(MappedArc::original(&self.0) as *const Arc<AssetEntry> as *const AssetKeepAlive)
-        }
+    pub fn keep_alive(me: &Self) -> &AssetKeepAlive {
+        unsafe { &*(MappedArc::original(&me.0) as *const Arc<AssetEntry> as *const AssetKeepAlive) }
+    }
+
+    pub fn into_keep_alive(me: Self) -> AssetKeepAlive {
+        AssetKeepAlive(MappedArc::into_original(me.0))
     }
 }
 
@@ -538,5 +595,106 @@ struct AssetKeyHashAdapter<'a, T>(&'a T);
 impl<T: AssetKey> hash::Hash for AssetKeyHashAdapter<'_, T> {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.0.hash_key(state);
+    }
+}
+
+// === AssetRetainer === //
+
+#[derive(Debug, Clone)]
+pub struct RetainPreserverOnlyFetches;
+
+#[derive(Debug)]
+pub struct AssetRetainer {
+    manager: AssetManager,
+    retained: FxHashMap<AssetKeepAlive, bool>,
+}
+
+impl AssetRetainer {
+    pub fn new(manager: AssetManager) -> Self {
+        Self {
+            manager,
+            retained: FxHashMap::default(),
+        }
+    }
+
+    pub fn preserve(&mut self) -> AssetRetainPreserveLoader<'_> {
+        AssetRetainPreserveLoader(self)
+    }
+
+    pub fn reap(&mut self) {
+        self.retained.retain(|_k, v| mem::replace(v, false));
+    }
+
+    pub fn collect(&mut self) -> AssetRetainCollectLoader<'_> {
+        AssetRetainCollectLoader(self)
+    }
+}
+
+#[derive(Debug)]
+pub struct AssetRetainPreserveLoader<'a>(&'a mut AssetRetainer);
+
+impl AssetLoader for AssetRetainPreserveLoader<'_> {
+    type Error = RetainPreserverOnlyFetches;
+
+    fn manager(&self) -> &AssetManager {
+        &self.0.manager
+    }
+
+    fn push_keep_alive(&mut self, keep_alive: &AssetKeepAlive) {
+        self.0.retained.insert(keep_alive.clone(), true);
+    }
+
+    fn load<C, K, O>(
+        &mut self,
+        context: C,
+        key: K,
+        loader: fn(&mut AssetManagerTracked, C, K) -> O,
+    ) -> Result<Asset<O>, Self::Error>
+    where
+        K: AssetKey,
+        O: 'static + Send + Sync,
+    {
+        let _ = context;
+
+        let Some(asset) = self.0.manager.fetch_untracked(key, loader) else {
+            return Err(RetainPreserverOnlyFetches);
+        };
+
+        self.0.retained.insert(Asset::into_keep_alive(asset), true);
+
+        Err(RetainPreserverOnlyFetches)
+    }
+}
+
+#[derive(Debug)]
+pub struct AssetRetainCollectLoader<'a>(&'a mut AssetRetainer);
+
+impl AssetLoader for AssetRetainCollectLoader<'_> {
+    type Error = AssetLoadInfallible;
+
+    fn manager(&self) -> &AssetManager {
+        &self.0.manager
+    }
+
+    fn push_keep_alive(&mut self, keep_alive: &AssetKeepAlive) {
+        assert!(
+            self.0.retained.contains_key(keep_alive),
+            "{keep_alive:?} never preserved",
+        );
+    }
+
+    fn load<C, K, O>(
+        &mut self,
+        context: C,
+        key: K,
+        loader: fn(&mut AssetManagerTracked, C, K) -> O,
+    ) -> Result<Asset<O>, Self::Error>
+    where
+        K: AssetKey,
+        O: 'static + Send + Sync,
+    {
+        let asset = self.manager().load_untracked(context, key, loader);
+        self.push_keep_alive(Asset::keep_alive(&asset));
+        Ok(asset)
     }
 }

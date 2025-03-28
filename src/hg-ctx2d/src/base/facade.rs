@@ -40,7 +40,7 @@ pub struct PipelineRef<'a> {
 }
 
 impl PipelineRef<'_> {
-    pub fn load(&self, assets: &mut impl AssetLoader) -> Asset<Pipeline> {
+    pub fn load<E>(&self, assets: &mut impl AssetLoader<Error = E>) -> Result<Asset<Pipeline>, E> {
         assets.load((), self, |_assets, (), key| key.to_owned_key())
     }
 }
@@ -436,16 +436,19 @@ impl AssetKey for PipelineCreationKey<'_> {
 }
 
 impl PipelineCreationKey<'_> {
-    fn load(self, assets: &mut impl AssetLoader, gfx: &GfxContext) -> Asset<wgpu::RenderPipeline> {
+    fn load<E>(
+        self,
+        assets: &mut impl AssetLoader<Error = E>,
+        gfx: &GfxContext,
+    ) -> Result<Asset<wgpu::RenderPipeline>, E> {
         assets.load(gfx, self, |assets, gfx, key| {
             gfx.device
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: key.pipeline.label.as_deref(),
-                    layout: Some(&load_pipeline_layout(
-                        assets,
-                        gfx,
-                        &key.pipeline.bind_group_layouts,
-                    )),
+                    layout: Some(
+                        &load_pipeline_layout(assets, gfx, &key.pipeline.bind_group_layouts)
+                            .unwrap(),
+                    ),
                     vertex: wgpu::VertexState {
                         module: &key.pipeline.vertex_module,
                         entry_point: key.pipeline.vertex_entry_name.as_deref(),
@@ -484,11 +487,11 @@ impl PipelineCreationKey<'_> {
     }
 }
 
-fn load_pipeline_layout(
-    assets: &mut impl AssetLoader,
+fn load_pipeline_layout<E>(
+    assets: &mut impl AssetLoader<Error = E>,
     gfx: &GfxContext,
     layouts: &[Asset<wgpu::BindGroupLayout>],
-) -> Asset<wgpu::PipelineLayout> {
+) -> Result<Asset<wgpu::PipelineLayout>, E> {
     assets.load(gfx, RefKey(layouts), |_assets, gfx, RefKey(layouts)| {
         gfx.device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
