@@ -621,11 +621,9 @@ impl AssetRetainer {
         AssetRetainPreserveLoader(self)
     }
 
-    pub fn reap(&mut self) {
-        self.retained.retain(|_k, v| mem::replace(v, false));
-    }
-
     pub fn collect(&mut self) -> AssetRetainCollectLoader<'_> {
+        self.retained.retain(|_k, v| mem::replace(v, false));
+
         AssetRetainCollectLoader(self)
     }
 }
@@ -677,10 +675,7 @@ impl AssetLoader for AssetRetainCollectLoader<'_> {
     }
 
     fn push_keep_alive(&mut self, keep_alive: &AssetKeepAlive) {
-        assert!(
-            self.0.retained.contains_key(keep_alive),
-            "{keep_alive:?} never preserved",
-        );
+        let _ = keep_alive;
     }
 
     fn load<C, K, O>(
@@ -694,7 +689,10 @@ impl AssetLoader for AssetRetainCollectLoader<'_> {
         O: 'static + Send + Sync,
     {
         let asset = self.manager().load_untracked(context, key, loader);
-        self.push_keep_alive(Asset::keep_alive(&asset));
+        self.0
+            .retained
+            .insert(Asset::keep_alive(&asset).clone(), false);
+
         Ok(asset)
     }
 }

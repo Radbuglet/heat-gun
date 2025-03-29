@@ -1,10 +1,13 @@
 pub mod buffer;
 
-mod facade;
-pub use facade::*;
+mod assets;
+pub use assets::*;
 
 mod gfx_bundle;
 pub use gfx_bundle::*;
+
+mod raw_context;
+pub use raw_context::*;
 
 mod stream;
 pub use stream::*;
