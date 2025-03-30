@@ -132,7 +132,8 @@ impl DynamicBufferManager {
         assert!(to <= state.target_len);
         state.target_len = to;
 
-        // Adjust buffer length, inserting placeholder chunks to keep indexing consistent.
+        // Adjust buffer length to ensure that copies on buffer resize don't include extraneous
+        // data.
         state.buffer_len = state.buffer_len.min(to);
     }
 
@@ -247,9 +248,13 @@ impl DynamicBufferManager {
             };
 
             // Flush writes
-            state
-                .writer
-                .flush(&mut self.belt, encoder, buffer, state.local_copy.as_deref());
+            state.writer.flush(
+                &mut self.belt,
+                encoder,
+                buffer,
+                state.target_len,
+                state.local_copy.as_deref(),
+            );
 
             state.buffer_len = state.target_len;
         }
@@ -285,7 +290,7 @@ impl ChunkStagingBelt {
         self.chunk_size
     }
 
-    pub fn acquire(&mut self, device: &wgpu::Device) -> wgpu::Buffer {
+    pub fn acquire_mapped(&mut self, device: &wgpu::Device) -> wgpu::Buffer {
         while let Ok(chunk) = self.free_chunk_recv.get_mut().unwrap().try_recv() {
             self.free_chunks.push(chunk);
         }
@@ -304,7 +309,7 @@ impl ChunkStagingBelt {
         buffer
     }
 
-    pub fn release(&mut self, buffer: wgpu::Buffer) {
+    pub fn map_and_release(&mut self, buffer: wgpu::Buffer) {
         let tx = self.free_chunk_send.clone();
 
         buffer
@@ -367,7 +372,7 @@ impl ChunkBufferWriter {
                         .chunks
                         .entry(chunk_base)
                         .or_insert_with(|| CbwChunk {
-                            buffer: self.belt.acquire(self.device),
+                            buffer: self.belt.acquire_mapped(self.device),
                             intervals: SmallVec::new(),
                         });
 
@@ -422,15 +427,35 @@ impl ChunkBufferWriter {
         belt: &mut ChunkStagingBelt,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::Buffer,
+        target_len: wgpu::BufferAddress,
         local_copy: Option<&[u8]>,
     ) {
         for (chunk_base, mut chunk) in self.chunks.drain() {
             chunk.buffer.unmap();
 
-            chunk.intervals.sort_by(|a, b| a.start.cmp(&b.start));
+            // Don't upload chunks into truncated portions of the buffer.
+            if let Some(max_rel) = chunk_base.checked_sub(target_len) {
+                if max_rel < belt.chunk_size() {
+                    let max_rel = max_rel as u32;
+                    chunk.intervals.retain_mut(|range| {
+                        range.start = range.start.min(max_rel);
+                        range.end = range.end.min(max_rel);
+
+                        range.end > range.start
+                    });
+                } else {
+                    chunk.intervals.clear();
+                }
+            }
 
             // TODO: Coalesce intervals with small gaps between them if we have a local copy
             //  available to us? In the same step, align buffer with `local_copy` if unaligned.
+            chunk.intervals.sort_by(|a, b| a.start.cmp(&b.start));
+
+            // Perform uploads
+            if !chunk.intervals.is_empty() {
+                chunk.buffer.unmap();
+            }
 
             for interval in chunk.intervals {
                 encoder.copy_buffer_to_buffer(
@@ -442,13 +467,14 @@ impl ChunkBufferWriter {
                 );
             }
 
-            belt.release(chunk.buffer);
+            // Release the buffer.
+            belt.map_and_release(chunk.buffer);
         }
     }
 
     pub fn release(&mut self, belt: &mut ChunkStagingBelt) {
         for (_addr, chunk) in self.chunks.drain() {
-            belt.release(chunk.buffer);
+            belt.map_and_release(chunk.buffer);
         }
     }
 }
