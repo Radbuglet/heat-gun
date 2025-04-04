@@ -7,9 +7,10 @@ use hg_utils::hash::FxHashMap;
 use smallvec::SmallVec;
 use thunderdome::{Arena, Index};
 
-use crate::base::{SliceStream, StreamWriter};
-
-use super::{GfxContext, PositionedVecWriter, StreamWrite};
+use super::{
+    gfx_bundle::GfxContext,
+    stream::{PositionedVecWriter, SliceStream, StreamWrite, StreamWriter},
+};
 
 // === DynamicBufferManager === //
 

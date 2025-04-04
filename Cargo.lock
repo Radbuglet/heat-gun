@@ -1080,6 +1080,7 @@ dependencies = [
  "futures",
  "glam 0.30.0",
  "hg-utils",
+ "smallbox",
  "smallvec",
  "thunderdome",
  "tracing",

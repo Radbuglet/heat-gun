@@ -5,8 +5,6 @@ pub struct GfxContext(Arc<GfxContextInner>);
 
 #[derive(Debug)]
 pub struct GfxContextInner {
-    pub instance: wgpu::Instance,
-    pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub features: wgpu::Features,
@@ -14,18 +12,11 @@ pub struct GfxContextInner {
 }
 
 impl GfxContext {
-    pub fn new(
-        instance: wgpu::Instance,
-        adapter: wgpu::Adapter,
-        device: wgpu::Device,
-        queue: wgpu::Queue,
-    ) -> Self {
+    pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         let features = device.features();
         let limits = device.limits();
 
         Self(Arc::new(GfxContextInner {
-            instance,
-            adapter,
             device,
             queue,
             features,
