@@ -1,5 +1,6 @@
-use std::{fmt, mem, num::NonZeroU32};
+use std::{any::Any, fmt, mem, num::NonZeroU32, ops::Range, ptr::NonNull};
 
+use hg_utils::mem::SharedBox;
 use smallbox::SmallBox;
 
 // === PassScheduler === //
@@ -11,6 +12,7 @@ pub struct PassScheduler {
     depth_queue: Vec<DepthEpoch>,
     cmd_queue: Vec<QueuedCmd>,
     depth_buckets: Vec<usize>,
+    keep_alive: Vec<SharedBox<dyn Any>>,
 }
 
 impl fmt::Debug for PassScheduler {
@@ -22,6 +24,17 @@ impl fmt::Debug for PassScheduler {
 impl PassScheduler {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn push_many<T>(&mut self, ctx: T) -> PassSchedulerMany<'_, T>
+    where
+        T: 'static,
+    {
+        PassSchedulerMany {
+            scheduler: self,
+            keep_alive: KeepAliveState::Stack(ctx),
+        }
     }
 
     pub fn push(
@@ -73,6 +86,43 @@ impl PassScheduler {
         for mut cmd in self.cmd_queue {
             cmd(pass);
         }
+    }
+}
+
+pub struct PassSchedulerMany<'a, T: 'static> {
+    scheduler: &'a mut PassScheduler,
+    keep_alive: KeepAliveState<T>,
+}
+
+enum KeepAliveState<T> {
+    Stack(T),
+    Boxed(NonNull<T>),
+    Placeholder,
+}
+
+impl<'a, T: 'static> PassSchedulerMany<'a, T> {
+    pub fn push(
+        &mut self,
+        depth: DepthEpoch,
+        push: impl 'static + FnOnce(&mut wgpu::RenderPass<'_>, &mut T),
+    ) -> &mut Self {
+        let mut ctx = match mem::replace(&mut self.keep_alive, KeepAliveState::Placeholder) {
+            KeepAliveState::Stack(value) => {
+                let ctx_box = SharedBox::from_box(Box::new(value) as Box<dyn Any>);
+                let ctx = ctx_box.get().cast::<T>();
+                self.scheduler.keep_alive.push(ctx_box);
+
+                self.keep_alive = KeepAliveState::Boxed(ctx);
+                ctx
+            }
+            KeepAliveState::Boxed(ctx) => ctx,
+            KeepAliveState::Placeholder => unreachable!(),
+        };
+
+        self.scheduler
+            .push(depth, move |pass| push(pass, unsafe { ctx.as_mut() }));
+
+        self
     }
 }
 
@@ -134,5 +184,68 @@ impl DepthGenerator {
     pub fn next_epoch(&mut self) {
         self.depth = 0;
         self.epoch.0 = self.epoch.0.checked_add(1).unwrap();
+    }
+}
+
+// === DepthRuns === //
+
+#[derive(Debug)]
+pub struct DepthRuns<T> {
+    points: Vec<DepthRunPoint<T>>,
+}
+
+#[derive(Debug)]
+pub struct DepthRunPoint<T> {
+    pub epoch: Option<DepthEpoch>,
+    pub pos: T,
+}
+
+impl<T: Copy> DepthRuns<T> {
+    pub fn new(start: T) -> Self {
+        Self {
+            points: vec![DepthRunPoint {
+                epoch: None,
+                pos: start,
+            }],
+        }
+    }
+
+    pub fn record_pos(&mut self, epoch: DepthEpoch, pos: T) {
+        let latest = self.points.last_mut().unwrap();
+
+        if latest.epoch != Some(epoch) {
+            self.points.push(DepthRunPoint {
+                epoch: Some(epoch),
+                pos,
+            });
+        } else {
+            latest.pos = pos;
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (DepthEpoch, Range<T>)> + '_ {
+        self.points
+            .windows(2)
+            .map(|v| (v[1].epoch.unwrap(), v[0].pos..v[1].pos))
+    }
+
+    pub fn points(&self) -> &[DepthRunPoint<T>] {
+        &self.points
+    }
+
+    pub fn last_pos(&self) -> T {
+        self.points.last().unwrap().pos
+    }
+
+    pub fn last_epoch(&self) -> Option<DepthEpoch> {
+        self.points.last().unwrap().epoch
+    }
+
+    pub fn reset(&mut self, start: T) {
+        self.points.clear();
+        self.points.push(DepthRunPoint {
+            epoch: None,
+            pos: start,
+        });
     }
 }

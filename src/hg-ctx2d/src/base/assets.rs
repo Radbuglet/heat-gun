@@ -531,6 +531,33 @@ where
 }
 
 #[derive(Debug, Copy, Clone, Hash)]
+pub struct OptionKey<'a, T: ?Sized>(pub Option<&'a T>);
+
+impl<T> AssetKey for OptionKey<'_, T>
+where
+    T: ?Sized + hash::Hash + Eq + ToOwned,
+    T::Owned: 'static + fmt::Debug + Send + Sync,
+{
+    type Owned = Option<T::Owned>;
+
+    fn delegated(&self) -> impl AssetKey<Owned = Self::Owned> + '_ {
+        self
+    }
+
+    fn hash_key(&self, state: &mut impl hash::Hasher) {
+        self.0.hash(state);
+    }
+
+    fn to_owned_key(&self) -> Self::Owned {
+        self.0.map(|v| v.to_owned())
+    }
+
+    fn matches_key(&self, owned: &Self::Owned) -> bool {
+        self.0 == owned.as_ref().map(|v| v.borrow())
+    }
+}
+
+#[derive(Debug, Copy, Clone, Hash)]
 pub struct ListKey<'a, T>(pub &'a [&'a T]);
 
 impl<T> AssetKey for ListKey<'_, T>

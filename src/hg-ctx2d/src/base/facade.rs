@@ -1,5 +1,3 @@
-use glam::{Affine2, Vec2};
-
 use super::{
     assets::AssetManager,
     buffer::DynamicBufferManager,
@@ -7,6 +5,8 @@ use super::{
     gfx_bundle::GfxContext,
     transform::TransformManager,
 };
+
+// === CanvasBase === //
 
 #[derive(Debug)]
 pub struct CanvasBase {
@@ -21,8 +21,10 @@ pub struct CanvasBase {
 pub struct CanvasFinishDescriptor<'a> {
     pub encoder: &'a mut wgpu::CommandEncoder,
     pub color_attachment: &'a wgpu::TextureView,
+    pub color_format: wgpu::TextureFormat,
     pub color_load: wgpu::LoadOp<wgpu::Color>,
     pub depth_attachment: &'a wgpu::TextureView,
+    pub depth_format: wgpu::TextureFormat,
 }
 
 impl CanvasBase {
@@ -39,48 +41,35 @@ impl CanvasBase {
         }
     }
 
-    #[must_use]
-    pub fn transform(&self) -> Affine2 {
-        self.transform.transform()
-    }
-
-    pub fn set_transform(&mut self, xf: Affine2) {
-        self.transform.set_transform(xf);
-    }
-
-    pub fn apply_transform(&mut self, xf: Affine2) {
-        self.set_transform(self.transform() * xf);
-    }
-
-    pub fn translate(&mut self, by: Vec2) {
-        self.apply_transform(Affine2::from_translation(by));
-    }
-
-    pub fn scale(&mut self, by: Vec2) {
-        self.apply_transform(Affine2::from_scale(by));
-    }
-
-    pub fn rotate_rad(&mut self, rad: f32) {
-        self.apply_transform(Affine2::from_angle(rad));
-    }
-
-    pub fn rotate_deg(&mut self, deg: f32) {
-        self.rotate_rad(deg.to_radians());
-    }
-
     pub fn finish(&mut self, descriptor: CanvasFinishDescriptor<'_>, renderer: &mut dyn Renderer) {
         let CanvasFinishDescriptor {
             encoder,
             color_attachment,
+            color_format,
             color_load,
             depth_attachment,
+            depth_format,
         } = descriptor;
 
-        renderer.finish(RendererFinish::Data(self));
+        renderer.finish(
+            &mut FinishCtx {
+                canvas: self,
+                color_format,
+                depth_format,
+            },
+            &mut FinishReq::Data,
+        );
         self.buffers.flush(encoder);
 
         let mut scheduler = PassScheduler::new();
-        renderer.finish(RendererFinish::Passes(self, &mut scheduler));
+        renderer.finish(
+            &mut FinishCtx {
+                canvas: self,
+                color_format,
+                depth_format,
+            },
+            &mut FinishReq::Pass(&mut scheduler),
+        );
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("canvas render pass"),
@@ -108,14 +97,51 @@ impl CanvasBase {
         });
 
         scheduler.exec(&mut pass);
+
+        renderer.finish(
+            &mut FinishCtx {
+                canvas: self,
+                color_format,
+                depth_format,
+            },
+            &mut FinishReq::Reset,
+        );
     }
 }
 
+// === Renderer === //
+
 pub trait Renderer {
-    fn finish(&mut self, req: RendererFinish<'_>);
+    fn finish(&mut self, ctx: &mut FinishCtx<'_>, req: &mut FinishReq<'_>) {
+        match req {
+            FinishReq::Data => self.finish_data(ctx),
+            FinishReq::Pass(scheduler) => self.finish_pass(ctx, scheduler),
+            FinishReq::Reset => self.finish_reset(ctx),
+        }
+    }
+
+    fn finish_data(&mut self, ctx: &mut FinishCtx<'_>) {
+        let _ = ctx;
+    }
+
+    fn finish_pass(&mut self, ctx: &mut FinishCtx<'_>, scheduler: &mut PassScheduler) {
+        let _ = ctx;
+        let _ = scheduler;
+    }
+
+    fn finish_reset(&mut self, ctx: &mut FinishCtx<'_>) {
+        let _ = ctx;
+    }
 }
 
-pub enum RendererFinish<'a> {
-    Data(&'a mut CanvasBase),
-    Passes(&'a mut CanvasBase, &'a mut PassScheduler),
+pub struct FinishCtx<'a> {
+    pub canvas: &'a mut CanvasBase,
+    pub color_format: wgpu::TextureFormat,
+    pub depth_format: wgpu::TextureFormat,
+}
+
+pub enum FinishReq<'a> {
+    Data,
+    Pass(&'a mut PassScheduler),
+    Reset,
 }
