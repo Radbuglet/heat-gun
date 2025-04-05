@@ -1,3 +1,5 @@
+use glam::Affine2;
+use hg_utils::hash::{hash_map, FxHashMap};
 use thunderdome::{Arena, Index};
 
 use super::{
@@ -7,6 +9,7 @@ use super::{
     gfx_bundle::GfxContext,
     stream::StreamWrite,
     transform::{TransformManager, TransformUniformData},
+    InstanceRuns, RunIndex, TransformOffset,
 };
 
 // === Brush Descriptors === //
@@ -185,6 +188,9 @@ pub struct FinishDescriptor<'a> {
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct RawBrushHandle(pub Index);
 
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+struct RawBrushXfHandle(pub Index);
+
 #[derive(Debug)]
 pub struct RawCanvas {
     assets: AssetManager,
@@ -195,13 +201,37 @@ pub struct RawCanvas {
     transform: TransformManager,
 
     brushes: Arena<RawBrush>,
+    brushes_xf: Arena<RawBrushXf>,
+    last_xf_brush: Option<(RawBrushHandle, RawBrushXfHandle)>,
+
+    commands: Vec<RawCommand>,
+    blending_enabled: bool,
+}
+
+#[derive(Debug)]
+enum RawCommand {
+    Draw(RawBrushXfHandle, RunIndex),
+    SetScissor([u32; 4]),
+    UnsetScissor,
+    SetBlend(Option<wgpu::BlendState>),
+    StartClip,
+    EndClip,
+    UnsetClip,
 }
 
 #[derive(Debug)]
 struct RawBrush {
     descriptor: Asset<RawBrushDescriptor>,
+    uniforms: FxHashMap<u32, Asset<wgpu::BindGroup>>,
+    transforms: FxHashMap<TransformOffset, RawBrushXfHandle>,
+    last_xf: Option<(TransformOffset, RawBrushXfHandle)>,
+}
+
+#[derive(Debug)]
+struct RawBrushXf {
+    transform: TransformOffset,
     buffer: DynamicBufferHandle,
-    uniforms: Vec<Asset<wgpu::BindGroup>>,
+    runs: InstanceRuns,
 }
 
 impl RawCanvas {
@@ -218,25 +248,35 @@ impl RawCanvas {
             gfx,
             transform,
             brushes: Arena::new(),
+            brushes_xf: Arena::new(),
+            last_xf_brush: None,
+            commands: Vec::new(),
+            blending_enabled: false,
         }
     }
 
-    pub fn create_brush(
-        &mut self,
-        descriptor: Asset<RawBrushDescriptor>,
-        uniforms: impl IntoIterator<Item = Asset<wgpu::BindGroup>>,
-    ) -> RawBrushHandle {
-        let uniforms = uniforms.into_iter().collect();
-        let buffer = self.buffers.create(DynamicBufferOpts {
-            label: todo!(),
-            maintain_cpu_copy: todo!(),
-            usages: todo!(),
-        });
+    pub fn assets(&self) -> &AssetManager {
+        &self.assets
+    }
 
+    pub fn gfx(&self) -> &GfxContext {
+        &self.gfx
+    }
+
+    pub fn buffers(&self) -> &DynamicBufferManager {
+        &self.buffers
+    }
+
+    pub fn buffers_mut(&mut self) -> &mut DynamicBufferManager {
+        &mut self.buffers
+    }
+
+    pub fn create_brush(&mut self, descriptor: Asset<RawBrushDescriptor>) -> RawBrushHandle {
         let handle = RawBrushHandle(self.brushes.insert(RawBrush {
             descriptor,
-            buffer,
-            uniforms,
+            uniforms: FxHashMap::default(),
+            transforms: FxHashMap::default(),
+            last_xf: None,
         }));
 
         handle
@@ -246,33 +286,120 @@ impl RawCanvas {
         todo!()
     }
 
+    pub fn set_uniform(&mut self, brush: RawBrushHandle, idx: u32, group: Asset<wgpu::BindGroup>) {
+        self.brushes[brush.0].uniforms.insert(idx, group);
+    }
+
+    #[must_use]
+    pub fn transform(&self) -> Affine2 {
+        self.transform.transform()
+    }
+
+    pub fn set_transform(&mut self, xf: Affine2) {
+        self.transform.set_transform(xf);
+        self.last_xf_brush = None;
+    }
+
     pub fn set_scissor(&mut self, rect: Option<[u32; 4]>) {
-        todo!()
+        if let Some(rect) = rect {
+            self.commands.push(RawCommand::SetScissor(rect));
+        } else {
+            self.commands.push(RawCommand::UnsetScissor);
+        }
     }
 
     pub fn set_blend(&mut self, state: Option<wgpu::BlendState>) {
-        todo!()
+        self.commands.push(RawCommand::SetBlend(state));
+        self.blending_enabled = state.is_some();
     }
 
     pub fn start_clip(&mut self) {
-        todo!()
+        self.commands.push(RawCommand::StartClip);
     }
 
     pub fn end_clip(&mut self) {
-        todo!()
+        self.commands.push(RawCommand::EndClip);
     }
 
     pub fn unset_clip(&mut self) {
-        todo!()
+        self.commands.push(RawCommand::UnsetClip);
     }
 
     #[must_use]
     pub fn depth(&self) -> f32 {
-        todo!()
+        self.depth_gen.depth()
     }
 
-    pub fn draw(&mut self, brush: RawBrushHandle, data: &impl StreamWrite) {
-        todo!()
+    pub fn draw(&mut self, brush: RawBrushHandle, instance_count: u32, data: &impl StreamWrite) {
+        // Figure out the transformed brush to which we're drawing.
+        let brush_xf = 'find_xf: {
+            if let Some((last_brush, brush_xf)) = self.last_xf_brush {
+                if last_brush == brush {
+                    break 'find_xf brush_xf;
+                }
+            }
+
+            if self.blending_enabled {
+                // We swapped brushes with blending enables, which requires us to place the
+                // primitives in a new epoch.
+                self.depth_gen.advance_epoch();
+            }
+
+            let state = &mut self.brushes[brush.0];
+
+            let curr_xf = self.transform.transform_offset(&mut self.buffers);
+
+            if let Some((last_xf, brush_xf)) = state.last_xf {
+                if last_xf == curr_xf {
+                    break 'find_xf brush_xf;
+                }
+            }
+
+            let xf_entry = match state.transforms.entry(curr_xf) {
+                hash_map::Entry::Occupied(entry) => {
+                    let brush_xf = *entry.get();
+                    state.last_xf = Some((curr_xf, brush_xf));
+                    break 'find_xf brush_xf;
+                }
+                hash_map::Entry::Vacant(entry) => entry,
+            };
+
+            let buffer = self.buffers.create(DynamicBufferOpts {
+                label: state.descriptor.label.as_deref(),
+                maintain_cpu_copy: false,
+                usages: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
+            });
+
+            let brush_xf = RawBrushXfHandle(self.brushes_xf.insert(RawBrushXf {
+                transform: curr_xf,
+                buffer,
+                runs: InstanceRuns::new(),
+            }));
+
+            xf_entry.insert(brush_xf);
+            state.last_xf = Some((curr_xf, brush_xf));
+
+            brush_xf
+        };
+
+        self.last_xf_brush = Some((brush, brush_xf));
+
+        // Push the instance
+        let state = &mut self.brushes[brush_xf.0];
+        let state_xf = &mut self.brushes_xf[brush_xf.0];
+
+        let written = self.buffers.extend(state_xf.buffer, data);
+
+        debug_assert_eq!(
+            written,
+            instance_count as u64 * state.descriptor.instance_stride
+        );
+
+        if let Some(run_idx) = state_xf.runs.push(self.depth_gen.epoch(), instance_count) {
+            self.commands.push(RawCommand::Draw(brush_xf, run_idx));
+        }
+
+        self.depth_gen.advance_depth();
     }
 
     pub fn finish(&mut self, descriptor: FinishDescriptor<'_>) {
@@ -286,6 +413,8 @@ impl RawCanvas {
         } = descriptor;
 
         self.buffers.flush(encoder);
+
+        // TODO
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("canvas render pass"),
@@ -311,5 +440,7 @@ impl RawCanvas {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
+
+        // TODO
     }
 }

@@ -17,7 +17,7 @@ use super::{
 pub struct TransformOffset(pub u32);
 
 #[derive(Debug)]
-pub struct TransformManager {
+pub(super) struct TransformManager {
     buffer: DynamicBufferHandle,
     offset_map: FxHashMap<Affine2Bits, TransformOffset>,
     curr_xf: Affine2,
@@ -98,7 +98,7 @@ impl From<Affine2> for Affine2Bits {
 // === Uniforms === //
 
 #[derive(Debug, Copy, Clone, AsStd430)]
-pub struct TransformUniformData {
+pub(super) struct TransformUniformData {
     pub xf_mat: Mat2,
     pub xf_trans: Vec2,
 }

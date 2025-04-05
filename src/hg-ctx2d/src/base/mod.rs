@@ -1,7 +1,20 @@
-pub mod assets;
-pub mod buffer;
-pub mod depth;
-pub mod facade;
-pub mod gfx_bundle;
-pub mod stream;
-pub mod transform;
+mod assets;
+pub use assets::*;
+
+mod buffer;
+pub use buffer::*;
+
+mod depth;
+pub use depth::*;
+
+mod facade;
+pub use facade::*;
+
+mod gfx_bundle;
+pub use gfx_bundle::*;
+
+mod stream;
+pub use stream::*;
+
+mod transform;
+pub use transform::*;

@@ -16,7 +16,7 @@ pub trait StreamWriter {
 }
 
 #[derive(Debug)]
-pub struct PositionedVecWriter<'a> {
+pub(super) struct PositionedVecWriter<'a> {
     pub target: &'a mut Vec<u8>,
     pub start: usize,
 }

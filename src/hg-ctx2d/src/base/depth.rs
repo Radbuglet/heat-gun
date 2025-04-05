@@ -1,18 +1,12 @@
-use std::{mem, num::NonZeroU32};
+use std::{mem, num::NonZeroU32, ops::Range};
 
 // === Generator === //
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DepthEpoch(pub NonZeroU32);
 
-impl DepthEpoch {
-    fn as_index(self) -> usize {
-        (self.0.get() - 1) as usize
-    }
-}
-
 #[derive(Debug)]
-pub struct DepthGenerator {
+pub(super) struct DepthGenerator {
     epoch: DepthEpoch,
     depth: u32,
 }
@@ -48,15 +42,70 @@ impl DepthGenerator {
         todo!()
     }
 
-    pub fn next_depth(&mut self) {
+    pub fn advance_depth(&mut self) {
         self.depth += 1;
         if self.depth() >= 1.0 {
-            self.next_epoch();
+            self.advance_epoch();
         }
     }
 
-    pub fn next_epoch(&mut self) {
+    pub fn advance_epoch(&mut self) {
         self.depth = 0;
         self.epoch.0 = self.epoch.0.checked_add(1).unwrap();
+    }
+}
+
+// === InstanceRuns === //
+
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+pub struct RunIndex(u32);
+
+#[derive(Debug, Default)]
+pub(crate) struct InstanceRuns {
+    starts: Vec<u32>,
+    last_epoch: Option<DepthEpoch>,
+    len: u32,
+}
+
+impl InstanceRuns {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn reset(&mut self) {
+        self.starts.clear();
+        self.last_epoch = None;
+        self.len = 0;
+    }
+
+    #[must_use]
+    pub fn push(&mut self, epoch: DepthEpoch, count: u32) -> Option<RunIndex> {
+        if self.last_epoch == Some(epoch) {
+            self.len += count;
+            return None;
+        }
+
+        debug_assert!(epoch.0.get() > self.last_epoch.map_or(0, |v| v.0.get()));
+
+        let idx = RunIndex(self.starts.len() as u32);
+        self.starts.push(self.len);
+        self.len += count;
+
+        Some(idx)
+    }
+
+    pub fn len(&self) -> u32 {
+        self.len
+    }
+
+    pub fn range(&self, idx: RunIndex) -> Range<u32> {
+        let start = self.starts[idx.0 as usize];
+        let end = self
+            .starts
+            .get(idx.0 as usize + 1)
+            .copied()
+            .unwrap_or(self.len);
+
+        start..end
     }
 }
