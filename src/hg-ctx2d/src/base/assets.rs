@@ -239,12 +239,7 @@ impl AssetManager {
 
 // === AssetLoader === //
 
-#[derive(Debug, Copy, Clone)]
-pub enum AssetLoadInfallible {}
-
 pub trait AssetLoader: Sized {
-    type Error;
-
     fn manager(&self) -> &AssetManager;
 
     fn push_keep_alive(&mut self, keep_alive: &AssetKeepAlive);
@@ -254,15 +249,13 @@ pub trait AssetLoader: Sized {
         context: C,
         key: K,
         loader: fn(&mut AssetManagerTracked, C, K) -> O,
-    ) -> Result<Asset<O>, Self::Error>
+    ) -> Asset<O>
     where
         K: AssetKey,
         O: 'static + Send + Sync;
 }
 
 impl AssetLoader for AssetManager {
-    type Error = AssetLoadInfallible;
-
     fn manager(&self) -> &AssetManager {
         self
     }
@@ -276,12 +269,12 @@ impl AssetLoader for AssetManager {
         context: C,
         key: K,
         loader: fn(&mut AssetManagerTracked, C, K) -> O,
-    ) -> Result<Asset<O>, Self::Error>
+    ) -> Asset<O>
     where
         K: AssetKey,
         O: 'static + Send + Sync,
     {
-        Ok(self.load_untracked(context, key, loader))
+        self.load_untracked(context, key, loader)
     }
 }
 
@@ -309,8 +302,6 @@ impl AssetManagerTracked {
 }
 
 impl AssetLoader for AssetManagerTracked {
-    type Error = AssetLoadInfallible;
-
     fn manager(&self) -> &AssetManager {
         &self.manager
     }
@@ -324,14 +315,14 @@ impl AssetLoader for AssetManagerTracked {
         context: C,
         key: K,
         loader: fn(&mut AssetManagerTracked, C, K) -> O,
-    ) -> Result<Asset<O>, Self::Error>
+    ) -> Asset<O>
     where
         K: AssetKey,
         O: 'static + Send + Sync,
     {
         let asset = self.manager().load_untracked(context, key, loader);
         self.push_keep_alive(Asset::keep_alive(&asset));
-        Ok(asset)
+        asset
     }
 }
 
@@ -627,9 +618,6 @@ impl<T: AssetKey> hash::Hash for AssetKeyHashAdapter<'_, T> {
 
 // === AssetRetainer === //
 
-#[derive(Debug, Clone)]
-pub struct RetainPreserverOnlyFetches;
-
 #[derive(Debug)]
 pub struct AssetRetainer {
     manager: AssetManager,
@@ -644,29 +632,25 @@ impl AssetRetainer {
         }
     }
 
-    pub fn preserve(&mut self) -> AssetRetainPreserveLoader<'_> {
-        AssetRetainPreserveLoader(self)
-    }
-
-    pub fn collect(&mut self) -> AssetRetainCollectLoader<'_> {
-        self.retained.retain(|_k, v| mem::replace(v, false));
-
-        AssetRetainCollectLoader(self)
+    pub fn reap(&mut self) {
+        self.retained.retain(|_, is_kept| mem::take(is_kept));
     }
 }
 
-#[derive(Debug)]
-pub struct AssetRetainPreserveLoader<'a>(&'a mut AssetRetainer);
-
-impl AssetLoader for AssetRetainPreserveLoader<'_> {
-    type Error = RetainPreserverOnlyFetches;
-
+impl AssetLoader for AssetRetainer {
     fn manager(&self) -> &AssetManager {
-        &self.0.manager
+        &self.manager
     }
 
     fn push_keep_alive(&mut self, keep_alive: &AssetKeepAlive) {
-        self.0.retained.insert(keep_alive.clone(), true);
+        match self.retained.get_mut(keep_alive) {
+            Some(entry) => {
+                *entry = true;
+            }
+            None => {
+                self.retained.insert(keep_alive.clone(), true);
+            }
+        }
     }
 
     fn load<C, K, O>(
@@ -674,52 +658,13 @@ impl AssetLoader for AssetRetainPreserveLoader<'_> {
         context: C,
         key: K,
         loader: fn(&mut AssetManagerTracked, C, K) -> O,
-    ) -> Result<Asset<O>, Self::Error>
-    where
-        K: AssetKey,
-        O: 'static + Send + Sync,
-    {
-        let _ = context;
-
-        let Some(asset) = self.0.manager.fetch_untracked(key, loader) else {
-            return Err(RetainPreserverOnlyFetches);
-        };
-
-        self.0.retained.insert(Asset::into_keep_alive(asset), true);
-
-        Err(RetainPreserverOnlyFetches)
-    }
-}
-
-#[derive(Debug)]
-pub struct AssetRetainCollectLoader<'a>(&'a mut AssetRetainer);
-
-impl AssetLoader for AssetRetainCollectLoader<'_> {
-    type Error = AssetLoadInfallible;
-
-    fn manager(&self) -> &AssetManager {
-        &self.0.manager
-    }
-
-    fn push_keep_alive(&mut self, keep_alive: &AssetKeepAlive) {
-        let _ = keep_alive;
-    }
-
-    fn load<C, K, O>(
-        &mut self,
-        context: C,
-        key: K,
-        loader: fn(&mut AssetManagerTracked, C, K) -> O,
-    ) -> Result<Asset<O>, Self::Error>
+    ) -> Asset<O>
     where
         K: AssetKey,
         O: 'static + Send + Sync,
     {
         let asset = self.manager().load_untracked(context, key, loader);
-        self.0
-            .retained
-            .insert(Asset::keep_alive(&asset).clone(), false);
-
-        Ok(asset)
+        self.push_keep_alive(&Asset::keep_alive(&asset));
+        asset
     }
 }

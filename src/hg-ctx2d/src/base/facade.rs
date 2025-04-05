@@ -40,11 +40,11 @@ pub struct RawBrushDescriptor {
 
 // === Brush Pipelines === //
 
-fn load_pipeline_layout<E>(
-    assets: &mut impl AssetLoader<Error = E>,
+fn load_pipeline_layout(
+    assets: &mut impl AssetLoader,
     gfx: &GfxContext,
     layouts: &[&Asset<wgpu::BindGroupLayout>],
-) -> Result<Asset<wgpu::PipelineLayout>, E> {
+) -> Asset<wgpu::PipelineLayout> {
     assets.load(gfx, ListKey(layouts), |_assets, gfx, ListKey(layouts)| {
         gfx.device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -61,6 +61,7 @@ pub struct RawBrushPipelineDescriptor<'a> {
     pub color_format: wgpu::TextureFormat,
     pub depth_format: wgpu::TextureFormat,
     pub clip_mode: RawBrushClipMode,
+    pub blend_state: Option<wgpu::BlendState>,
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
@@ -76,6 +77,7 @@ impl AssetKey for RawBrushPipelineDescriptor<'_> {
         wgpu::TextureFormat,
         wgpu::TextureFormat,
         RawBrushClipMode,
+        Option<wgpu::BlendState>,
     );
 
     fn delegated(&self) -> impl AssetKey<Owned = Self::Owned> + '_ {
@@ -84,18 +86,19 @@ impl AssetKey for RawBrushPipelineDescriptor<'_> {
             RefKey(&self.color_format),
             RefKey(&self.depth_format),
             RefKey(&self.clip_mode),
+            RefKey(&self.blend_state),
         )
     }
 }
 
 impl RawBrushPipelineDescriptor<'_> {
-    pub fn load<E>(
+    pub fn load(
         &self,
-        assets: &mut impl AssetLoader<Error = E>,
+        assets: &mut impl AssetLoader,
         gfx: &GfxContext,
-    ) -> Result<Asset<wgpu::RenderPipeline>, E> {
+    ) -> Asset<wgpu::RenderPipeline> {
         assets.load(gfx, self, |assets, gfx, me| {
-            let layout = TransformUniformData::group_layout(assets, gfx).unwrap();
+            let layout = TransformUniformData::group_layout(assets, gfx);
             let layout = load_pipeline_layout(assets, gfx, &[&layout]);
 
             let stencil_state = match me.clip_mode {
@@ -126,7 +129,7 @@ impl RawBrushPipelineDescriptor<'_> {
             gfx.device
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: me.descriptor.label.as_deref(),
-                    layout: Some(&*layout.unwrap()),
+                    layout: Some(&*layout),
                     vertex: wgpu::VertexState {
                         module: &me.descriptor.vertex_module,
                         entry_point: me.descriptor.vertex_entry.as_deref(),
@@ -160,7 +163,7 @@ impl RawBrushPipelineDescriptor<'_> {
                         compilation_options: wgpu::PipelineCompilationOptions::default(),
                         targets: &[Some(wgpu::ColorTargetState {
                             format: me.color_format,
-                            blend: None,
+                            blend: me.blend_state,
                             write_mask: wgpu::ColorWrites::all(),
                         })],
                     }),
@@ -181,6 +184,8 @@ pub struct FinishDescriptor<'a> {
     pub color_load: wgpu::LoadOp<wgpu::Color>,
     pub depth_attachment: &'a wgpu::TextureView,
     pub depth_format: wgpu::TextureFormat,
+    pub width: u32,
+    pub height: u32,
 }
 
 // === RawCanvas === //
@@ -229,6 +234,7 @@ struct RawBrush {
 
 #[derive(Debug)]
 struct RawBrushXf {
+    brush: RawBrushHandle,
     transform: TransformOffset,
     buffer: DynamicBufferHandle,
     runs: InstanceRuns,
@@ -371,6 +377,7 @@ impl RawCanvas {
             });
 
             let brush_xf = RawBrushXfHandle(self.brushes_xf.insert(RawBrushXf {
+                brush,
                 transform: curr_xf,
                 buffer,
                 runs: InstanceRuns::new(),
@@ -410,12 +417,14 @@ impl RawCanvas {
             color_load,
             depth_attachment,
             depth_format,
+            width,
+            height,
         } = descriptor;
 
+        // Flush remaining buffers
         self.buffers.flush(encoder);
 
-        // TODO
-
+        // Render pass
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("canvas render pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -441,6 +450,92 @@ impl RawCanvas {
             occlusion_query_set: None,
         });
 
-        // TODO
+        let transform_group_layout =
+            TransformUniformData::group_layout(&mut self.retainer, &self.gfx);
+
+        let transform_group = self
+            .gfx
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("transform group"),
+                layout: &transform_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(
+                        self.buffers
+                            .buffer(self.transform.buffer())
+                            .as_entire_buffer_binding(),
+                    ),
+                }],
+            });
+
+        let mut clip_mode = RawBrushClipMode::IgnoreClip;
+        let mut blend_state = None;
+        let mut clip_idx = 0;
+
+        for cmd in self.commands.drain(..) {
+            match cmd {
+                RawCommand::Draw(brush_xf, run_idx) => {
+                    let state_xf = &self.brushes_xf[brush_xf.0];
+                    let state = &self.brushes[state_xf.brush.0];
+
+                    let pipeline = RawBrushPipelineDescriptor {
+                        descriptor: &state.descriptor,
+                        color_format,
+                        depth_format,
+                        clip_mode,
+                        blend_state,
+                    }
+                    .load(&mut self.retainer, &self.gfx);
+
+                    let instance_range = state_xf.runs.range(run_idx);
+
+                    pass.set_pipeline(&pipeline);
+
+                    pass.set_bind_group(0, &transform_group, &[state_xf.transform.0]);
+
+                    for (idx, group) in &state.uniforms {
+                        pass.set_bind_group(*idx, &**group, &[]);
+                    }
+
+                    pass.draw(0..6, instance_range);
+                }
+                RawCommand::SetScissor([x, y, width, height]) => {
+                    pass.set_scissor_rect(x, y, width, height);
+                }
+                RawCommand::UnsetScissor => {
+                    pass.set_scissor_rect(0, 0, width, height);
+                }
+                RawCommand::SetBlend(new_blend_state) => {
+                    blend_state = new_blend_state;
+                }
+                RawCommand::StartClip => {
+                    clip_mode = RawBrushClipMode::SetClip;
+                    pass.set_stencil_reference(clip_idx);
+                    clip_idx += 1;
+                }
+                RawCommand::EndClip => {
+                    clip_mode = RawBrushClipMode::ObeyClip;
+                }
+                RawCommand::UnsetClip => {
+                    clip_mode = RawBrushClipMode::IgnoreClip;
+                }
+            }
+        }
+
+        drop(pass);
+
+        // Reset encoder state
+        self.retainer.reap();
+        self.depth_gen.reset();
+        self.transform.reset(&mut self.buffers);
+        self.brushes_xf.clear();
+        self.last_xf_brush = None;
+        self.blending_enabled = false;
+
+        for (_brush, state) in &mut self.brushes {
+            state.last_xf = None;
+            state.transforms.clear();
+        }
     }
 }

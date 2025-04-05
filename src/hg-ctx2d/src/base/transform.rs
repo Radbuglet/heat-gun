@@ -104,10 +104,10 @@ pub(super) struct TransformUniformData {
 }
 
 impl TransformUniformData {
-    pub fn group_layout<E>(
-        assets: &mut impl AssetLoader<Error = E>,
+    pub fn group_layout(
+        assets: &mut impl AssetLoader,
         gfx: &GfxContext,
-    ) -> Result<Asset<wgpu::BindGroupLayout>, E> {
+    ) -> Asset<wgpu::BindGroupLayout> {
         assets.load(gfx, (), |_assets, gfx, ()| {
             gfx.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
