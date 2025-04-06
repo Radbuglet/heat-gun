@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use anyhow::Context as _;
 use futures::executor::block_on;
@@ -152,17 +152,21 @@ impl App {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        state.canvas.fill_rect(
-            Vec2::new(-1., -1.),
-            Vec2::new(1., 2.),
-            Vec4::new(1., 0., 0., 1.),
-        );
+        let start = Instant::now();
 
-        state.canvas.fill_rect(
-            Vec2::new(0., -1.),
-            Vec2::new(1., 2.),
-            Vec4::new(0., 1., 0., 1.),
-        );
+        fastrand::seed(4);
+
+        for x in 0..100 {
+            for y in 0..100 {
+                state.canvas.fill_rect(
+                    Vec2::new(x as f32 / 100., y as f32 / 100.),
+                    Vec2::new(1. / 100., 1. / 100.),
+                    Vec4::new(fastrand::f32(), fastrand::f32(), fastrand::f32(), 1.),
+                );
+            }
+        }
+
+        dbg!(start.elapsed());
 
         state.canvas.finish(FinishDescriptor {
             encoder: &mut encoder,

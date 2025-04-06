@@ -385,6 +385,9 @@ impl ChunkBufferWriter {
                 while !data.is_empty() {
                     // Determine the chunk for this current transaction.
                     let chunk_base = self.offset / self.belt.chunk_size() * self.belt.chunk_size();
+                    let chunk_rel = self.offset - chunk_base;
+                    let write_sz =
+                        (self.belt.chunk_size() - chunk_rel).min(data.len() as wgpu::BufferAddress);
 
                     let chunk = self
                         .writer
@@ -395,22 +398,20 @@ impl ChunkBufferWriter {
                             intervals: SmallVec::new(),
                         });
 
-                    // Determine chunk size
-                    let mut view = chunk.buffer.slice(..).get_mapped_range_mut();
-                    let write_sz = view.len().min(data.len());
-
-                    let start = (self.offset % self.belt.chunk_size()) as u32;
-                    self.offset += write_sz as wgpu::BufferAddress;
-                    let end = (self.offset % self.belt.chunk_size()) as u32;
-
                     // Perform copy
-                    view[(start as usize)..(end as usize)].copy_from_slice(&data[..write_sz]);
+                    let mut view = chunk
+                        .buffer
+                        .slice(chunk_rel..(chunk_rel + write_sz))
+                        .get_mapped_range_mut();
 
-                    // Advance `data` buffer
-                    data = &data[write_sz..];
+                    view.copy_from_slice(&data[..write_sz as usize]);
+
+                    // Advance cursor
+                    data = &data[write_sz as usize..];
+                    self.offset += write_sz as wgpu::BufferAddress;
 
                     // Delete all intervals that overlap with us, extending our interval as we go.
-                    let mut to_insert = start..end;
+                    let mut to_insert = chunk_rel as u32..(chunk_rel + write_sz) as u32;
                     let mut i = 0;
 
                     while i < chunk.intervals.len() {
