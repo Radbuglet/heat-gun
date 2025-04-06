@@ -349,11 +349,15 @@ impl ChunkStagingBelt {
 #[derive(Debug, Default)]
 pub struct ChunkBufferWriter {
     /// Maps chunk base address to a buffer containing the chunk's staged data.
-    chunks: FxHashMap<wgpu::BufferAddress, CbwChunk>,
+    chunk_map: FxHashMap<wgpu::BufferAddress, Index>,
+
+    chunks: Arena<CbwChunk>,
+    last_chunk: Option<(wgpu::BufferAddress, Index)>,
 }
 
 #[derive(Debug)]
 struct CbwChunk {
+    base: wgpu::BufferAddress,
     buffer: wgpu::Buffer,
     intervals: SmallVec<[Range<u32>; 1]>,
 }
@@ -389,14 +393,25 @@ impl ChunkBufferWriter {
                     let write_sz =
                         (self.belt.chunk_size() - chunk_rel).min(data.len() as wgpu::BufferAddress);
 
-                    let chunk = self
-                        .writer
-                        .chunks
-                        .entry(chunk_base)
-                        .or_insert_with(|| CbwChunk {
-                            buffer: self.belt.acquire_mapped(self.device),
-                            intervals: SmallVec::new(),
-                        });
+                    let chunk = 'find_chunk: {
+                        if let Some((last_base, last_chunk)) = self.writer.last_chunk {
+                            if chunk_base == last_base {
+                                break 'find_chunk last_chunk;
+                            }
+                        }
+
+                        *self.writer.chunk_map.entry(chunk_base).or_insert_with(|| {
+                            self.writer.chunks.insert(CbwChunk {
+                                base: chunk_base,
+                                buffer: self.belt.acquire_mapped(self.device),
+                                intervals: SmallVec::new(),
+                            })
+                        })
+                    };
+
+                    self.writer.last_chunk = Some((chunk_base, chunk));
+
+                    let chunk = &mut self.writer.chunks[chunk];
 
                     // Perform copy
                     let mut view = chunk
@@ -453,9 +468,11 @@ impl ChunkBufferWriter {
         target_len: wgpu::BufferAddress,
         local_copy: Option<&[u8]>,
     ) {
-        for (chunk_base, mut chunk) in self.chunks.drain() {
+        self.chunk_map.clear();
+
+        for (_chunk_handle, mut chunk) in self.chunks.drain() {
             // Don't upload chunks into truncated portions of the buffer.
-            if let Some(max_rel) = chunk_base.checked_sub(target_len) {
+            if let Some(max_rel) = chunk.base.checked_sub(target_len) {
                 if max_rel < belt.chunk_size() {
                     let max_rel = max_rel as u32;
                     chunk.intervals.retain_mut(|range| {
@@ -483,7 +500,7 @@ impl ChunkBufferWriter {
                     &chunk.buffer,
                     interval.start.into(),
                     target,
-                    chunk_base + u64::from(interval.start),
+                    chunk.base + u64::from(interval.start),
                     u64::from(interval.end - interval.start),
                 );
             }
@@ -494,6 +511,8 @@ impl ChunkBufferWriter {
     }
 
     pub fn release(&mut self, belt: &mut ChunkStagingBelt) {
+        self.chunk_map.clear();
+
         for (_addr, chunk) in self.chunks.drain() {
             belt.queue_reclaim(chunk.buffer);
         }
