@@ -414,12 +414,10 @@ impl ChunkBufferWriter {
                     let chunk = &mut self.writer.chunks[chunk];
 
                     // Perform copy
-                    let mut view = chunk
-                        .buffer
-                        .slice(chunk_rel..(chunk_rel + write_sz))
-                        .get_mapped_range_mut();
+                    let mut view = chunk.buffer.slice(..).get_mapped_range_mut();
 
-                    view.copy_from_slice(&data[..write_sz as usize]);
+                    view[chunk_rel as usize..(chunk_rel + write_sz) as usize]
+                        .copy_from_slice(&data[..write_sz as usize]);
 
                     // Advance cursor
                     data = &data[write_sz as usize..];
@@ -432,7 +430,7 @@ impl ChunkBufferWriter {
                     while i < chunk.intervals.len() {
                         let other = &chunk.intervals[i];
 
-                        if !(other.start <= to_insert.start && to_insert.end <= other.end) {
+                        if other.start > to_insert.end && to_insert.start > other.end {
                             i += 1;
                             continue;
                         }
