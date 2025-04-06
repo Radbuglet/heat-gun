@@ -71,7 +71,7 @@ impl TransformManager {
                 let offset = buffers.len(self.buffer) as u32;
                 buffers.extend(
                     self.buffer,
-                    &Crevice(&TransformUniformData {
+                    &Crevice(&CanvasUniformData {
                         xf_mat: self.curr_xf.matrix2,
                         xf_trans: self.curr_xf.translation,
                     }),
@@ -98,12 +98,12 @@ impl From<Affine2> for Affine2Bits {
 // === Uniforms === //
 
 #[derive(Debug, Copy, Clone, AsStd430)]
-pub(super) struct TransformUniformData {
+pub(super) struct CanvasUniformData {
     pub xf_mat: Mat2,
     pub xf_trans: Vec2,
 }
 
-impl TransformUniformData {
+impl CanvasUniformData {
     pub fn group_layout(
         assets: &mut impl AssetLoader,
         gfx: &GfxContext,
@@ -111,8 +111,17 @@ impl TransformUniformData {
         assets.load(gfx, (), |_assets, gfx, ()| {
             gfx.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: todo!(),
-                    entries: todo!(),
+                    label: Some("canvas uniform bind group layout"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::all(),
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: true,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }],
                 })
         })
     }

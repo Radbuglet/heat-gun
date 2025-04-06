@@ -1,5 +1,5 @@
 @group(0) @binding(0)
-var<uniform> uniform: Uniform;
+var<uniform> canvas_uniform: CanvasUniform;
 
 const vertices = array(
     // (0, 0)       (1, 0)
@@ -19,7 +19,7 @@ const vertices = array(
     vec2f(0., 1.),  // (4)
 );
 
-struct Uniform {
+struct CanvasUniform {
     affine_mat: mat2x2f,
     affine_trans: vec2f,
 }
@@ -27,7 +27,7 @@ struct Uniform {
 struct Instance {
     @location(0) pos: vec3f,
     @location(1) size: vec2f,
-    @location(2) color: vec4f,
+    @location(3) color: vec4f,
 }
 
 struct VertexOutput {
@@ -39,7 +39,7 @@ struct VertexOutput {
 fn vs_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> VertexOutput {
     let local_pos = instance.pos.xy + vertices[vertex_index] * instance.size;
 
-    let clip_pos_2d = uniform.affine_mat * local_pos + uniform.affine_trans;
+    let clip_pos_2d = canvas_uniform.affine_mat * local_pos + canvas_uniform.affine_trans;
     let clip_pos = vec4f(clip_pos_2d, instance.pos.z, 1.);
 
     return VertexOutput(

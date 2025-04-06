@@ -253,6 +253,19 @@ pub trait AssetLoader: Sized {
     where
         K: AssetKey,
         O: 'static + Send + Sync;
+
+    fn load_alias<C, K, O>(
+        &mut self,
+        context: C,
+        key: K,
+        loader: fn(&mut AssetManagerTracked, C, K) -> Asset<O>,
+    ) -> Asset<O>
+    where
+        K: AssetKey,
+        O: 'static + Send + Sync,
+    {
+        Asset::map(self.load(context, key, loader), |v| &**v)
+    }
 }
 
 impl AssetLoader for AssetManager {

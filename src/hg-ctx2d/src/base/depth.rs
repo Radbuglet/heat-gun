@@ -39,7 +39,7 @@ impl DepthGenerator {
 
     #[must_use]
     pub fn depth(&self) -> f32 {
-        todo!()
+        f32::MIN_POSITIVE + f32::from_bits(self.depth)
     }
 
     pub fn advance_depth(&mut self) {

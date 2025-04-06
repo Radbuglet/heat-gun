@@ -1,3 +1,5 @@
+use std::hash::{self, Hash};
+
 use glam::Affine2;
 use hg_utils::hash::{hash_map, FxHashMap};
 use thunderdome::{Arena, Index};
@@ -8,13 +10,13 @@ use super::{
     depth::DepthGenerator,
     gfx_bundle::GfxContext,
     stream::StreamWrite,
-    transform::{TransformManager, TransformUniformData},
+    transform::{CanvasUniformData, TransformManager},
     InstanceRuns, RunIndex, TransformOffset,
 };
 
 // === Brush Descriptors === //
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct RawBrushDescriptorRef<'a> {
     pub label: Option<&'a str>,
     pub vertex_module: &'a Asset<wgpu::ShaderModule>,
@@ -36,6 +38,53 @@ pub struct RawBrushDescriptor {
     pub instance_stride: wgpu::BufferAddress,
     pub instance_attributes: Vec<wgpu::VertexAttribute>,
     pub uniforms: Vec<Option<Asset<wgpu::BindGroupLayout>>>,
+}
+
+impl RawBrushDescriptorRef<'_> {
+    pub fn intern(&self, assets: &mut impl AssetLoader) -> Asset<RawBrushDescriptor> {
+        assets.load((), self, |_assets, (), me| me.to_owned_key())
+    }
+}
+
+impl AssetKey for RawBrushDescriptorRef<'_> {
+    type Owned = RawBrushDescriptor;
+
+    fn delegated(&self) -> impl AssetKey<Owned = Self::Owned> + '_ {
+        self
+    }
+
+    fn hash_key(&self, state: &mut impl hash::Hasher) {
+        self.hash(state);
+    }
+
+    fn matches_key(&self, owned: &Self::Owned) -> bool {
+        self.label == owned.label.as_deref()
+            && self.vertex_module == &owned.vertex_module
+            && self.vertex_entry == owned.vertex_entry.as_deref()
+            && self.fragment_module == &owned.fragment_module
+            && self.fragment_entry == owned.fragment_entry.as_deref()
+            && self.instance_stride == owned.instance_stride
+            && self.instance_attributes == owned.instance_attributes
+            && self.uniforms.len() == owned.uniforms.len()
+            && self
+                .uniforms
+                .iter()
+                .zip(&owned.uniforms)
+                .all(|(l, r)| *l == r.as_ref())
+    }
+
+    fn to_owned_key(&self) -> Self::Owned {
+        RawBrushDescriptor {
+            label: self.label.map(|v| v.to_string()),
+            vertex_module: self.vertex_module.clone(),
+            vertex_entry: self.vertex_entry.map(|v| v.to_string()),
+            fragment_module: self.fragment_module.clone(),
+            fragment_entry: self.fragment_entry.map(|v| v.to_string()),
+            instance_stride: self.instance_stride,
+            instance_attributes: self.instance_attributes.iter().cloned().collect(),
+            uniforms: self.uniforms.iter().map(|v| v.cloned()).collect(),
+        }
+    }
 }
 
 // === Brush Pipelines === //
@@ -98,7 +147,7 @@ impl RawBrushPipelineDescriptor<'_> {
         gfx: &GfxContext,
     ) -> Asset<wgpu::RenderPipeline> {
         assets.load(gfx, self, |assets, gfx, me| {
-            let layout = TransformUniformData::group_layout(assets, gfx);
+            let layout = CanvasUniformData::group_layout(assets, gfx);
             let layout = load_pipeline_layout(assets, gfx, &[&layout]);
 
             let stencil_state = match me.clip_mode {
@@ -210,7 +259,7 @@ pub struct RawCanvas {
     last_xf_brush: Option<(RawBrushHandle, RawBrushXfHandle)>,
 
     commands: Vec<RawCommand>,
-    blending_enabled: bool,
+    blend: Option<wgpu::BlendState>,
 }
 
 #[derive(Debug)]
@@ -257,7 +306,7 @@ impl RawCanvas {
             brushes_xf: Arena::new(),
             last_xf_brush: None,
             commands: Vec::new(),
-            blending_enabled: false,
+            blend: None,
         }
     }
 
@@ -306,17 +355,22 @@ impl RawCanvas {
         self.last_xf_brush = None;
     }
 
+    #[must_use]
+    pub fn blend(&self) -> Option<wgpu::BlendState> {
+        self.blend
+    }
+
+    pub fn set_blend(&mut self, state: Option<wgpu::BlendState>) {
+        self.commands.push(RawCommand::SetBlend(state));
+        self.blend = state;
+    }
+
     pub fn set_scissor(&mut self, rect: Option<[u32; 4]>) {
         if let Some(rect) = rect {
             self.commands.push(RawCommand::SetScissor(rect));
         } else {
             self.commands.push(RawCommand::UnsetScissor);
         }
-    }
-
-    pub fn set_blend(&mut self, state: Option<wgpu::BlendState>) {
-        self.commands.push(RawCommand::SetBlend(state));
-        self.blending_enabled = state.is_some();
     }
 
     pub fn start_clip(&mut self) {
@@ -345,7 +399,7 @@ impl RawCanvas {
                 }
             }
 
-            if self.blending_enabled {
+            if self.blend.is_some() {
                 // We swapped brushes with blending enables, which requires us to place the
                 // primitives in a new epoch.
                 self.depth_gen.advance_epoch();
@@ -450,8 +504,7 @@ impl RawCanvas {
             occlusion_query_set: None,
         });
 
-        let transform_group_layout =
-            TransformUniformData::group_layout(&mut self.retainer, &self.gfx);
+        let transform_group_layout = CanvasUniformData::group_layout(&mut self.retainer, &self.gfx);
 
         let transform_group = self
             .gfx
@@ -529,9 +582,12 @@ impl RawCanvas {
         self.retainer.reap();
         self.depth_gen.reset();
         self.transform.reset(&mut self.buffers);
-        self.brushes_xf.clear();
         self.last_xf_brush = None;
-        self.blending_enabled = false;
+        self.blend = None;
+
+        for (_brush_xf, state_xf) in &mut self.brushes_xf {
+            self.buffers.destroy(state_xf.buffer);
+        }
 
         for (_brush, state) in &mut self.brushes {
             state.last_xf = None;

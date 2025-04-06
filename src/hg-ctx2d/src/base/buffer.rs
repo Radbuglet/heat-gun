@@ -364,6 +364,8 @@ impl ChunkBufferWriter {
 
         impl StreamWriter for WriteTarget<'_> {
             fn write(&mut self, mut data: &[u8]) {
+                self.total_written += data.len() as wgpu::BufferAddress;
+
                 while !data.is_empty() {
                     // Determine the chunk for this current transaction.
                     let chunk_base = self.offset / self.belt.chunk_size() * self.belt.chunk_size();
