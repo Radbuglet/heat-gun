@@ -77,4 +77,8 @@ impl Canvas {
 
         self.raw.finish(descriptor);
     }
+
+    pub fn reclaim(&mut self) {
+        self.raw.reclaim();
+    }
 }

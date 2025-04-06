@@ -199,7 +199,7 @@ impl RawBrushPipelineDescriptor<'_> {
                         conservative: false,
                     },
                     depth_stencil: Some(wgpu::DepthStencilState {
-                        format: me.color_format,
+                        format: me.depth_format,
                         depth_write_enabled: true,
                         depth_compare: wgpu::CompareFunction::Less,
                         stencil: stencil_state,
@@ -551,6 +551,7 @@ impl RawCanvas {
                         pass.set_bind_group(*idx, &**group, &[]);
                     }
 
+                    pass.set_vertex_buffer(0, self.buffers.buffer(state_xf.buffer).slice(..));
                     pass.draw(0..6, instance_range);
                 }
                 RawCommand::SetScissor([x, y, width, height]) => {
@@ -593,5 +594,9 @@ impl RawCanvas {
             state.last_xf = None;
             state.transforms.clear();
         }
+    }
+
+    pub fn reclaim(&mut self) {
+        self.buffers.reclaim();
     }
 }

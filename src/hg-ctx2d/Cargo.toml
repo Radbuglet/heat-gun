@@ -20,3 +20,4 @@ anyhow = "1.0.97"
 futures = "0.3.31"
 winit = "0.30.9"
 wgpu = { version = "24.0.1", default-features = true }
+fastrand = "2.3.0"

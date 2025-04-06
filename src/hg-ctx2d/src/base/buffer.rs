@@ -261,6 +261,10 @@ impl DynamicBufferManager {
         }
     }
 
+    pub fn reclaim(&mut self) {
+        self.belt.reclaim_all();
+    }
+
     pub fn buffer(&self, buffer: DynamicBufferHandle) -> &wgpu::Buffer {
         self.buffers[buffer.0].buffer.as_ref().unwrap()
     }
@@ -274,6 +278,8 @@ pub struct ChunkStagingBelt {
     free_chunks: Vec<wgpu::Buffer>,
     free_chunk_recv: Mutex<mpsc::Receiver<wgpu::Buffer>>,
     free_chunk_send: mpsc::Sender<wgpu::Buffer>,
+    reclaim_queue: Vec<wgpu::Buffer>,
+    total_buffers: u32,
 }
 
 impl ChunkStagingBelt {
@@ -284,6 +290,8 @@ impl ChunkStagingBelt {
             free_chunks: Vec::new(),
             free_chunk_recv: Mutex::new(free_chunk_recv),
             free_chunk_send,
+            reclaim_queue: Vec::new(),
+            total_buffers: 0,
         }
     }
 
@@ -301,32 +309,40 @@ impl ChunkStagingBelt {
         }
 
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("DynamicBuffer staging"),
+            label: Some(&format!("DynamicBuffer staging {}", self.total_buffers)),
             size: self.chunk_size,
             usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
             mapped_at_creation: true,
         });
 
+        self.total_buffers += 1;
+
         buffer
     }
 
-    pub fn map_and_release(&mut self, buffer: wgpu::Buffer) {
-        let tx = self.free_chunk_send.clone();
+    pub fn queue_reclaim(&mut self, buffer: wgpu::Buffer) {
+        self.reclaim_queue.push(buffer);
+    }
 
-        buffer
-            .clone()
-            .slice(..)
-            .map_async(wgpu::MapMode::Write, move |res| {
-                if let Err(err) = res {
-                    tracing::warn!("failed to remap {buffer:?}: {err}");
-                    buffer.destroy();
-                    return;
-                }
+    pub fn reclaim_all(&mut self) {
+        for buffer in self.reclaim_queue.drain(..) {
+            let tx = self.free_chunk_send.clone();
 
-                if let Err(err) = tx.send(buffer) {
-                    err.0.destroy();
-                }
-            });
+            buffer
+                .clone()
+                .slice(..)
+                .map_async(wgpu::MapMode::Write, move |res| {
+                    if let Err(err) = res {
+                        tracing::warn!("failed to remap {buffer:?}: {err}");
+                        buffer.destroy();
+                        return;
+                    }
+
+                    if let Err(err) = tx.send(buffer) {
+                        err.0.destroy();
+                    }
+                });
+        }
     }
 }
 
@@ -434,8 +450,6 @@ impl ChunkBufferWriter {
         local_copy: Option<&[u8]>,
     ) {
         for (chunk_base, mut chunk) in self.chunks.drain() {
-            chunk.buffer.unmap();
-
             // Don't upload chunks into truncated portions of the buffer.
             if let Some(max_rel) = chunk_base.checked_sub(target_len) {
                 if max_rel < belt.chunk_size() {
@@ -471,13 +485,13 @@ impl ChunkBufferWriter {
             }
 
             // Release the buffer.
-            belt.map_and_release(chunk.buffer);
+            belt.queue_reclaim(chunk.buffer);
         }
     }
 
     pub fn release(&mut self, belt: &mut ChunkStagingBelt) {
         for (_addr, chunk) in self.chunks.drain() {
-            belt.map_and_release(chunk.buffer);
+            belt.queue_reclaim(chunk.buffer);
         }
     }
 }

@@ -27,7 +27,7 @@ struct CanvasUniform {
 struct Instance {
     @location(0) pos: vec3f,
     @location(1) size: vec2f,
-    @location(3) color: vec4f,
+    @location(2) color: vec4f,
 }
 
 struct VertexOutput {
