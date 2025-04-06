@@ -152,15 +152,17 @@ impl App {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        fastrand::seed(4);
+        state.canvas.fill_rect(
+            Vec2::new(-1., -1.),
+            Vec2::new(1., 2.),
+            Vec4::new(1., 0., 0., 1.),
+        );
 
-        for _ in 0..1000 {
-            state.canvas.fill_rect(
-                Vec2::new(fastrand::f32() - 0.5, fastrand::f32() - 0.5),
-                Vec2::new(0.2, 0.2),
-                Vec4::new(1., 0., 1.0, 1.0),
-            );
-        }
+        state.canvas.fill_rect(
+            Vec2::new(0., -1.),
+            Vec2::new(1., 2.),
+            Vec4::new(0., 1., 0., 1.),
+        );
 
         state.canvas.finish(FinishDescriptor {
             encoder: &mut encoder,

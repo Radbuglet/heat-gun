@@ -90,6 +90,7 @@ impl InstanceRuns {
         let idx = RunIndex(self.starts.len() as u32);
         self.starts.push(self.len);
         self.len += count;
+        self.last_epoch = Some(epoch);
 
         Some(idx)
     }

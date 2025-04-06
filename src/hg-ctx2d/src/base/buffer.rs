@@ -237,7 +237,7 @@ impl DynamicBufferManager {
                     mapped_at_creation: false,
                 });
 
-                if let Some(old_buffer) = &state.buffer {
+                if let Some(old_buffer) = state.buffer.as_ref().filter(|_| state.buffer_len > 0) {
                     encoder.copy_buffer_to_buffer(&old_buffer, 0, &new_buffer, 0, state.buffer_len);
                 }
 
@@ -395,16 +395,19 @@ impl ChunkBufferWriter {
                             intervals: SmallVec::new(),
                         });
 
-                    // Copy part of the data into the buffer.
+                    // Determine chunk size
                     let mut view = chunk.buffer.slice(..).get_mapped_range_mut();
-                    let written = view.len().min(data.len());
-                    view[..written].copy_from_slice(&data[..written]);
-                    data = &data[written..];
+                    let write_sz = view.len().min(data.len());
 
-                    // Advance the `offset` and the `data` slice in parallel.
                     let start = (self.offset % self.belt.chunk_size()) as u32;
-                    self.offset += written as wgpu::BufferAddress;
+                    self.offset += write_sz as wgpu::BufferAddress;
                     let end = (self.offset % self.belt.chunk_size()) as u32;
+
+                    // Perform copy
+                    view[(start as usize)..(end as usize)].copy_from_slice(&data[..write_sz]);
+
+                    // Advance `data` buffer
+                    data = &data[write_sz..];
 
                     // Delete all intervals that overlap with us, extending our interval as we go.
                     let mut to_insert = start..end;
