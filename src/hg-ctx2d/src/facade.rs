@@ -1,4 +1,6 @@
-use glam::{Affine2, Vec2, Vec4};
+use std::ops::{Deref, DerefMut};
+
+use glam::{Vec2, Vec4};
 
 use crate::{
     base::{AssetManager, FinishDescriptor, GfxContext, RawCanvas},
@@ -32,40 +34,6 @@ impl Canvas {
         Self { raw, brushes }
     }
 
-    #[must_use]
-    pub fn transform(&self) -> Affine2 {
-        self.raw.transform()
-    }
-
-    pub fn set_transform(&mut self, xf: Affine2) {
-        self.raw.set_transform(xf);
-    }
-
-    #[must_use]
-    pub fn blend(&self) -> Option<wgpu::BlendState> {
-        self.raw.blend()
-    }
-
-    pub fn set_blend(&mut self, state: Option<wgpu::BlendState>) {
-        self.raw.set_blend(state);
-    }
-
-    pub fn set_scissor(&mut self, rect: Option<[u32; 4]>) {
-        self.raw.set_scissor(rect);
-    }
-
-    pub fn start_clip(&mut self) {
-        self.raw.start_clip();
-    }
-
-    pub fn end_clip(&mut self) {
-        self.raw.end_clip();
-    }
-
-    pub fn unset_clip(&mut self) {
-        self.raw.unset_clip();
-    }
-
     pub fn fill_rect(&mut self, pos: Vec2, size: Vec2, color: Vec4) {
         self.brushes
             .solid_rect
@@ -73,12 +41,26 @@ impl Canvas {
     }
 
     pub fn finish(&mut self, descriptor: FinishDescriptor<'_>) {
-        // TODO: Finish brushes
+        // TODO: finish brushes
 
-        self.raw.finish(descriptor);
+        self.raw.finish_raw(descriptor);
     }
 
     pub fn reclaim(&mut self) {
-        self.raw.reclaim();
+        self.raw.reclaim_raw();
+    }
+}
+
+impl Deref for Canvas {
+    type Target = RawCanvas;
+
+    fn deref(&self) -> &Self::Target {
+        &self.raw
+    }
+}
+
+impl DerefMut for Canvas {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.raw
     }
 }

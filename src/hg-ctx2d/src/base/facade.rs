@@ -1,6 +1,6 @@
 use std::hash::{self, Hash};
 
-use glam::Affine2;
+use glam::{Affine2, UVec2, Vec2};
 use hg_utils::hash::{hash_map, FxHashMap};
 use thunderdome::{Arena, Index};
 
@@ -201,7 +201,7 @@ impl RawBrushPipelineDescriptor<'_> {
                     depth_stencil: Some(wgpu::DepthStencilState {
                         format: me.depth_format,
                         depth_write_enabled: true,
-                        depth_compare: wgpu::CompareFunction::Less,
+                        depth_compare: wgpu::CompareFunction::Greater,
                         stencil: stencil_state,
                         bias: wgpu::DepthBiasState::default(),
                     }),
@@ -260,6 +260,8 @@ pub struct RawCanvas {
 
     commands: Vec<RawCommand>,
     blend: Option<wgpu::BlendState>,
+
+    canvas_sz: UVec2,
 }
 
 #[derive(Debug)]
@@ -307,6 +309,7 @@ impl RawCanvas {
             last_xf_brush: None,
             commands: Vec::new(),
             blend: None,
+            canvas_sz: UVec2::ZERO,
         }
     }
 
@@ -324,6 +327,25 @@ impl RawCanvas {
 
     pub fn buffers_mut(&mut self) -> &mut DynamicBufferManager {
         &mut self.buffers
+    }
+
+    pub fn set_canvas_size(&mut self, sz: UVec2) {
+        self.canvas_sz = sz;
+    }
+
+    #[must_use]
+    pub fn canvas_sz(&self) -> UVec2 {
+        self.canvas_sz
+    }
+
+    #[must_use]
+    pub fn width(&self) -> u32 {
+        self.canvas_sz.x
+    }
+
+    #[must_use]
+    pub fn height(&self) -> u32 {
+        self.canvas_sz.y
     }
 
     pub fn create_brush(&mut self, descriptor: Asset<RawBrushDescriptor>) -> RawBrushHandle {
@@ -353,6 +375,37 @@ impl RawCanvas {
     pub fn set_transform(&mut self, xf: Affine2) {
         self.transform.set_transform(xf);
         self.last_xf_brush = None;
+    }
+
+    pub fn apply_transform(&mut self, xf: Affine2) {
+        self.set_transform(self.transform() * xf);
+    }
+
+    pub fn translate(&mut self, by: Vec2) {
+        self.apply_transform(Affine2::from_translation(by));
+    }
+
+    pub fn scale(&mut self, by: Vec2) {
+        self.apply_transform(Affine2::from_scale(by));
+    }
+
+    pub fn rotate_rad(&mut self, rad: f32) {
+        self.apply_transform(Affine2::from_angle(rad));
+    }
+
+    pub fn rotate_deg(&mut self, deg: f32) {
+        self.rotate_rad(deg.to_radians());
+    }
+
+    pub fn init_transform_gl(&mut self) {
+        self.set_transform(Affine2::IDENTITY);
+    }
+
+    pub fn init_transform_painter(&mut self) {
+        self.init_transform_gl();
+        self.scale(Vec2::new(1., -1.));
+        self.translate(-Vec2::ONE);
+        self.scale(0.5 / self.canvas_sz().as_vec2());
     }
 
     #[must_use]
@@ -463,7 +516,7 @@ impl RawCanvas {
         self.depth_gen.advance_depth();
     }
 
-    pub fn finish(&mut self, descriptor: FinishDescriptor<'_>) {
+    pub fn finish_raw(&mut self, descriptor: FinishDescriptor<'_>) {
         let FinishDescriptor {
             encoder,
             color_attachment,
@@ -492,7 +545,7 @@ impl RawCanvas {
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth_attachment,
                 depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.),
+                    load: wgpu::LoadOp::Clear(0.),
                     store: wgpu::StoreOp::Discard,
                 }),
                 stencil_ops: Some(wgpu::Operations {
@@ -596,7 +649,7 @@ impl RawCanvas {
         }
     }
 
-    pub fn reclaim(&mut self) {
+    pub fn reclaim_raw(&mut self) {
         self.buffers.reclaim();
     }
 }

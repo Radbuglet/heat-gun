@@ -154,17 +154,29 @@ impl App {
 
         let start = Instant::now();
 
-        fastrand::seed(4);
+        state
+            .canvas
+            .set_canvas_size(UVec2::new(frame.texture.width(), frame.texture.height()));
 
-        for x in 0..100 {
-            for y in 0..100 {
-                state.canvas.fill_rect(
-                    Vec2::new(x as f32 / 100., y as f32 / 100.),
-                    Vec2::new(1. / 100., 1. / 100.),
-                    Vec4::new(fastrand::f32(), fastrand::f32(), fastrand::f32(), 1.),
-                );
-            }
-        }
+        state.canvas.init_transform_painter();
+
+        state.canvas.fill_rect(
+            Vec2::new(500., 500.),
+            Vec2::new(500., 500.),
+            Vec4::new(1., 0., 0., 1.),
+        );
+
+        state.canvas.fill_rect(
+            Vec2::new(500., 500.),
+            Vec2::new(500., 500.),
+            Vec4::new(0., 1., 0., 1.),
+        );
+
+        state.canvas.fill_rect(
+            Vec2::new(500., 500.),
+            Vec2::new(500., 500.),
+            Vec4::new(0., 0., 1., 1.),
+        );
 
         dbg!(start.elapsed());
 
