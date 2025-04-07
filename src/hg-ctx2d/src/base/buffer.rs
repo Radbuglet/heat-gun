@@ -467,6 +467,7 @@ impl ChunkBufferWriter {
         local_copy: Option<&[u8]>,
     ) {
         self.chunk_map.clear();
+        self.last_chunk = None;
 
         for (_chunk_handle, mut chunk) in self.chunks.drain() {
             // Don't upload chunks into truncated portions of the buffer.
@@ -510,6 +511,7 @@ impl ChunkBufferWriter {
 
     pub fn release(&mut self, belt: &mut ChunkStagingBelt) {
         self.chunk_map.clear();
+        self.last_chunk = None;
 
         for (_addr, chunk) in self.chunks.drain() {
             belt.queue_reclaim(chunk.buffer);

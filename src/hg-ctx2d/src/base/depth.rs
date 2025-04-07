@@ -39,12 +39,12 @@ impl DepthGenerator {
 
     #[must_use]
     pub fn depth(&self) -> f32 {
-        f32::MIN_POSITIVE + f32::from_bits(self.depth)
+        f32::from_bits(f32::MIN_POSITIVE.to_bits() + self.depth)
     }
 
     pub fn advance_depth(&mut self) {
         self.depth += 1;
-        if self.depth() >= 1.0 {
+        if self.depth() >= 1. {
             self.advance_epoch();
         }
     }

@@ -446,7 +446,7 @@ impl RawCanvas {
         self.last_xf_brush = Some((brush, brush_xf));
 
         // Push the instance
-        let state = &mut self.brushes[brush_xf.0];
+        let state = &mut self.brushes[brush.0];
         let state_xf = &mut self.brushes_xf[brush_xf.0];
 
         let written = self.buffers.extend(state_xf.buffer, data);
