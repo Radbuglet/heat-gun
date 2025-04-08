@@ -160,22 +160,37 @@ impl App {
 
         state.canvas.init_transform_painter();
 
-        state.canvas.fill_rect(
-            Vec2::new(500., 500.),
-            Vec2::new(500., 500.),
-            Vec4::new(1., 0., 0., 1.),
-        );
+        state.canvas.set_blend(Some(wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::SrcAlpha,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::REPLACE,
+        }));
+
+        // state.canvas.fill_rect(
+        //     Vec2::new(50., 50.),
+        //     Vec2::splat(50.),
+        //     Vec4::new(1., 0., 0., 1.),
+        // );
+        //
+        // state.canvas.fill_rect(
+        //     Vec2::new(51., 50.),
+        //     Vec2::splat(50.),
+        //     Vec4::new(0., 1., 0., 1.),
+        // );
+        //
+        // state.canvas.fill_rect(
+        //     Vec2::new(52., 50.),
+        //     Vec2::splat(50.),
+        //     Vec4::new(0., 0., 1., 1.0),
+        // );
 
         state.canvas.fill_rect(
-            Vec2::new(500., 500.),
-            Vec2::new(500., 500.),
-            Vec4::new(0., 1., 0., 1.),
-        );
-
-        state.canvas.fill_rect(
-            Vec2::new(500., 500.),
-            Vec2::new(500., 500.),
-            Vec4::new(0., 0., 1., 1.),
+            Vec2::splat(100.25),
+            Vec2::splat(500.),
+            Vec4::new(1., 1., 1., 1.),
         );
 
         dbg!(start.elapsed());

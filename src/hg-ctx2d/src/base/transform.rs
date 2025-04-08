@@ -1,7 +1,7 @@
 use std::hash::Hash;
 
 use crevice::std430::AsStd430;
-use glam::{Affine2, Mat2, Vec2};
+use glam::{Affine2, IVec2, Mat2, Vec2};
 use hg_utils::hash::FxHashMap;
 
 use super::{
@@ -71,7 +71,7 @@ impl TransformManager {
                 let offset = buffers.len(self.buffer) as u32;
                 buffers.extend(
                     self.buffer,
-                    &Crevice(&CanvasUniformData {
+                    &Crevice(&TransformUniformData {
                         xf_mat: self.curr_xf.matrix2,
                         xf_trans: self.curr_xf.translation,
                     }),
@@ -99,21 +99,39 @@ impl From<Affine2> for Affine2Bits {
 
 #[derive(Debug, Copy, Clone, AsStd430)]
 pub(super) struct CanvasUniformData {
+    pub size_i32: IVec2,
+    pub size_f32: Vec2,
+}
+
+#[derive(Debug, Copy, Clone, AsStd430)]
+pub(super) struct TransformUniformData {
     pub xf_mat: Mat2,
     pub xf_trans: Vec2,
 }
 
-impl CanvasUniformData {
-    pub fn group_layout(
-        assets: &mut impl AssetLoader,
-        gfx: &GfxContext,
-    ) -> Asset<wgpu::BindGroupLayout> {
-        assets.load(gfx, (), |_assets, gfx, ()| {
-            gfx.device
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("canvas uniform bind group layout"),
-                    entries: &[wgpu::BindGroupLayoutEntry {
+pub fn canvas_uniform_layout(
+    assets: &mut impl AssetLoader,
+    gfx: &GfxContext,
+) -> Asset<wgpu::BindGroupLayout> {
+    assets.load(gfx, (), |_assets, gfx, ()| {
+        gfx.device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("canvas uniform bind group layout"),
+                entries: &[
+                    // Type: `CanvasUniformData`
+                    wgpu::BindGroupLayoutEntry {
                         binding: 0,
+                        visibility: wgpu::ShaderStages::all(),
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Type: `TransformUniformData`
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
                         visibility: wgpu::ShaderStages::all(),
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
@@ -121,8 +139,8 @@ impl CanvasUniformData {
                             min_binding_size: None,
                         },
                         count: None,
-                    }],
-                })
-        })
-    }
+                    },
+                ],
+            })
+    })
 }

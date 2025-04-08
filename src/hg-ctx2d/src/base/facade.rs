@@ -7,11 +7,12 @@ use thunderdome::{Arena, Index};
 use super::{
     assets::{Asset, AssetKey, AssetLoader, AssetManager, AssetRetainer, ListKey, RefKey},
     buffer::{DynamicBufferHandle, DynamicBufferManager, DynamicBufferOpts},
+    canvas_uniform_layout,
     depth::DepthGenerator,
     gfx_bundle::GfxContext,
     stream::StreamWrite,
-    transform::{CanvasUniformData, TransformManager},
-    InstanceRuns, RunIndex, TransformOffset,
+    transform::{TransformManager, TransformUniformData},
+    CanvasUniformData, Crevice, InstanceRuns, RunIndex, TransformOffset,
 };
 
 // === Brush Descriptors === //
@@ -147,7 +148,7 @@ impl RawBrushPipelineDescriptor<'_> {
         gfx: &GfxContext,
     ) -> Asset<wgpu::RenderPipeline> {
         assets.load(gfx, self, |assets, gfx, me| {
-            let layout = CanvasUniformData::group_layout(assets, gfx);
+            let layout = canvas_uniform_layout(assets, gfx);
             let layout = load_pipeline_layout(assets, gfx, &[&layout]);
 
             let stencil_state = match me.clip_mode {
@@ -252,6 +253,7 @@ pub struct RawCanvas {
     buffers: DynamicBufferManager,
     depth_gen: DepthGenerator,
     gfx: GfxContext,
+    canvas_uniform_buffer: DynamicBufferHandle,
     transform: TransformManager,
 
     brushes: Arena<RawBrush>,
@@ -261,7 +263,7 @@ pub struct RawCanvas {
     commands: Vec<RawCommand>,
     blend: Option<wgpu::BlendState>,
 
-    canvas_sz: UVec2,
+    canvas_size: UVec2,
 }
 
 #[derive(Debug)]
@@ -297,19 +299,26 @@ impl RawCanvas {
         let mut buffers = DynamicBufferManager::new(gfx.clone());
         let transform = TransformManager::new(&mut buffers);
 
+        let canvas_uniform_buffer = buffers.create(DynamicBufferOpts {
+            label: Some("canvas uniform buffer"),
+            maintain_cpu_copy: false,
+            usages: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+        });
+
         RawCanvas {
             assets,
             retainer,
             buffers,
             depth_gen: DepthGenerator::new(),
             gfx,
+            canvas_uniform_buffer,
             transform,
             brushes: Arena::new(),
             brushes_xf: Arena::new(),
             last_xf_brush: None,
             commands: Vec::new(),
             blend: None,
-            canvas_sz: UVec2::ZERO,
+            canvas_size: UVec2::ZERO,
         }
     }
 
@@ -330,22 +339,22 @@ impl RawCanvas {
     }
 
     pub fn set_canvas_size(&mut self, sz: UVec2) {
-        self.canvas_sz = sz;
+        self.canvas_size = sz;
     }
 
     #[must_use]
-    pub fn canvas_sz(&self) -> UVec2 {
-        self.canvas_sz
+    pub fn canvas_size(&self) -> UVec2 {
+        self.canvas_size
     }
 
     #[must_use]
     pub fn width(&self) -> u32 {
-        self.canvas_sz.x
+        self.canvas_size.x
     }
 
     #[must_use]
     pub fn height(&self) -> u32 {
-        self.canvas_sz.y
+        self.canvas_size.y
     }
 
     pub fn create_brush(&mut self, descriptor: Asset<RawBrushDescriptor>) -> RawBrushHandle {
@@ -405,7 +414,7 @@ impl RawCanvas {
         self.init_transform_gl();
         self.scale(Vec2::new(1., -1.));
         self.translate(-Vec2::ONE);
-        self.scale(0.5 / self.canvas_sz().as_vec2());
+        self.scale(2.0 / self.canvas_size().as_vec2());
     }
 
     #[must_use]
@@ -528,6 +537,16 @@ impl RawCanvas {
             height,
         } = descriptor;
 
+        // Upload canvas state data.
+        self.buffers.clear(self.canvas_uniform_buffer);
+        self.buffers.extend(
+            self.canvas_uniform_buffer,
+            &Crevice(&CanvasUniformData {
+                size_i32: UVec2::new(width, height).as_ivec2(),
+                size_f32: UVec2::new(width, height).as_vec2(),
+            }),
+        );
+
         // Flush remaining buffers
         self.buffers.flush(encoder);
 
@@ -557,22 +576,32 @@ impl RawCanvas {
             occlusion_query_set: None,
         });
 
-        let transform_group_layout = CanvasUniformData::group_layout(&mut self.retainer, &self.gfx);
+        let canvas_uniform_layout = canvas_uniform_layout(&mut self.retainer, &self.gfx);
 
-        let transform_group = self
+        let canvas_uniform_group = self
             .gfx
             .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("transform group"),
-                layout: &transform_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(
-                        self.buffers
-                            .buffer(self.transform.buffer())
-                            .as_entire_buffer_binding(),
-                    ),
-                }],
+                label: Some("canvas uniform group"),
+                layout: &canvas_uniform_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(
+                            self.buffers
+                                .buffer(self.canvas_uniform_buffer)
+                                .as_entire_buffer_binding(),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Buffer(
+                            self.buffers
+                                .buffer(self.transform.buffer())
+                                .as_entire_buffer_binding(),
+                        ),
+                    },
+                ],
             });
 
         let mut clip_mode = RawBrushClipMode::IgnoreClip;
@@ -598,7 +627,7 @@ impl RawCanvas {
 
                     pass.set_pipeline(&pipeline);
 
-                    pass.set_bind_group(0, &transform_group, &[state_xf.transform.0]);
+                    pass.set_bind_group(0, &canvas_uniform_group, &[state_xf.transform.0]);
 
                     for (idx, group) in &state.uniforms {
                         pass.set_bind_group(*idx, &**group, &[]);
