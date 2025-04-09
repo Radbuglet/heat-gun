@@ -185,7 +185,13 @@ impl App {
         state.canvas.fill_rect(
             Vec2::splat(100.) + Vec2::X * (time.cos() as f32) * 100.,
             Vec2::splat(500.),
-            Vec4::new(1., 1., 1., 1.),
+            Vec4::new(0.5, 0.2, 0.6, 1.),
+        );
+
+        state.canvas.fill_rect(
+            Vec2::splat(100.) + Vec2::X * 500. + Vec2::X * (time.cos() as f32) * 100.,
+            Vec2::splat(500.),
+            Vec4::new(0.1, 0.7, 0.3, 1.),
         );
 
         dbg!(start.elapsed());

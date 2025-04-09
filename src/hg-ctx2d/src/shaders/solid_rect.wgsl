@@ -78,8 +78,8 @@ fn local_vec_to_raster(vec: vec2f) -> vec2f {
 }
 
 struct Basis2 {
-    bv1: vec2f,
-    bv2: vec2f,
+    x_hat: vec2f,
+    y_hat: vec2f,
 }
 
 struct BasisAndVec2 {
@@ -88,16 +88,16 @@ struct BasisAndVec2 {
 }
 
 fn normalize_basis_and_vec(val: BasisAndVec2) -> BasisAndVec2 {
-    let bv1_len = length(val.basis.bv1);
-    let bv2_len = length(val.basis.bv2);
-    let new_basis = Basis2(val.basis.bv1 / bv1_len, val.basis.bv2 / bv2_len);
-    let new_vec = val.vec * vec2f(bv1_len, bv2_len);
+    let x_hat_len = length(val.basis.x_hat);
+    let y_hat_len = length(val.basis.y_hat);
+    let new_basis = Basis2(val.basis.x_hat / x_hat_len, val.basis.y_hat / y_hat_len);
+    let new_vec = val.vec * vec2f(x_hat_len, y_hat_len);
 
     return BasisAndVec2(new_basis, new_vec);
 }
 
 fn collapse_basis_and_vec(val: BasisAndVec2) -> vec2f {
-    return val.basis.bv1 * val.vec.x + val.basis.bv2 * val.vec.y;
+    return val.basis.x_hat * val.vec.x + val.basis.y_hat * val.vec.y;
 }
 
 // Adapted from: https://iquilezles.org/articles/distfunctions2d/
@@ -121,8 +121,8 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> Vert
 
     // Determine the size of the quad in raster-space.
     var rast_size = local_size;
-    rast_size.basis.bv1 = local_vec_to_raster(rast_size.basis.bv1);
-    rast_size.basis.bv2 = local_vec_to_raster(rast_size.basis.bv2);
+    rast_size.basis.x_hat = local_vec_to_raster(rast_size.basis.x_hat);
+    rast_size.basis.y_hat = local_vec_to_raster(rast_size.basis.y_hat);
     rast_size = normalize_basis_and_vec(rast_size);
 
     // Determine a conservative size for the quad in raster-space to help us ensure that all
@@ -132,8 +132,9 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> Vert
 
     // Determine the size of the quad in clip-space.
     var con_clip_size = rast_size;
-    con_clip_size.basis.bv1 = raster_vec_to_clip(con_clip_size.basis.bv1);
-    con_clip_size.basis.bv2 = raster_vec_to_clip(con_clip_size.basis.bv2);
+    con_clip_size.basis.x_hat = raster_vec_to_clip(con_clip_size.basis.x_hat);
+    con_clip_size.basis.y_hat = raster_vec_to_clip(con_clip_size.basis.y_hat);
+    con_clip_size = normalize_basis_and_vec(con_clip_size);
 
     // Determine the conservative clip-space and raster-space positions of the vertex.
     let clip_vertex = clip_center + collapse_basis_and_vec(con_clip_size) * uv;
@@ -157,8 +158,8 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> Vert
     // determine SDF-relative coordinates by taking the dot-product of our vector w.r.t the basis
     // vectors.
     let sdf_pos = vec2f(
-        dot(rast_vertex_center_vec, rast_size.basis.bv1),
-        dot(rast_vertex_center_vec, rast_size.basis.bv2),
+        dot(rast_vertex_center_vec, rast_size.basis.x_hat),
+        dot(rast_vertex_center_vec, rast_size.basis.y_hat),
     );
 
     // Finally, convert `clip_vertex`—which is a position in 2D clip space—to an NDC position.
@@ -175,13 +176,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> Vert
 @fragment
 fn fs_main(out: VertexOutput) -> @location(0) vec4f {
     let sdf = sdf_box(out.sdf_pos, out.sdf_size);
+    let alpha = 1. - clamp(sdf, 0., 1.);
 
-    // var alpha = 1. - clamp(sdf, 0., 1.);
-    // return vec4f(alpha, 0., 1., 1.);
-
-    if sdf < 0. {
-        return vec4f(0., 1., 0., 1.);
-    } else {
-        return vec4f(1., 0., 0., 1.);
-    }
+    return vec4f(out.color.rgb, out.color.a * alpha);
 }
