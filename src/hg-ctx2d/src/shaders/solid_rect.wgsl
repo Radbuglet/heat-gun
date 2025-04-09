@@ -131,7 +131,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> Vert
     con_rast_size.vec += vec2f(2.);
 
     // Determine the size of the quad in clip-space.
-    var con_clip_size = rast_size;
+    var con_clip_size = con_rast_size;
     con_clip_size.basis.x_hat = raster_vec_to_clip(con_clip_size.basis.x_hat);
     con_clip_size.basis.y_hat = raster_vec_to_clip(con_clip_size.basis.y_hat);
     con_clip_size = normalize_basis_and_vec(con_clip_size);
