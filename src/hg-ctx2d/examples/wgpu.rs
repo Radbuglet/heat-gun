@@ -9,8 +9,8 @@ use hg_ctx2d::{
 };
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
-    event_loop::{ActiveEventLoop, EventLoop},
+    event::{StartCause, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::{Window, WindowAttributes, WindowId},
 };
 
@@ -36,6 +36,7 @@ struct AppState {
     surface_size: UVec2,
     surface_format: Option<wgpu::TextureFormat>,
     canvas: Canvas,
+    start: Instant,
 }
 
 impl ApplicationHandler for App {
@@ -49,6 +50,15 @@ impl ApplicationHandler for App {
                 }
             }
         }
+    }
+
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, _cause: StartCause) {
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
+
+        state.window.request_redraw();
+        event_loop.set_control_flow(ControlFlow::Poll);
     }
 
     fn window_event(
@@ -125,6 +135,7 @@ impl App {
             surface_size: UVec2::new(u32::MAX, u32::MAX),
             surface_format: None,
             canvas: Canvas::new(AssetManager::new(), gfx),
+            start: Instant::now(),
         };
 
         app.window.set_visible(true);
@@ -135,6 +146,8 @@ impl App {
 
     fn draw_surface(state: &mut AppState) -> anyhow::Result<()> {
         Self::maybe_reconfigure_surface(state);
+
+        let time = state.start.elapsed().as_secs_f64();
 
         state.gfx.device.start_capture();
 
@@ -169,26 +182,8 @@ impl App {
             alpha: wgpu::BlendComponent::REPLACE,
         }));
 
-        // state.canvas.fill_rect(
-        //     Vec2::new(50., 50.),
-        //     Vec2::splat(50.),
-        //     Vec4::new(1., 0., 0., 1.),
-        // );
-        //
-        // state.canvas.fill_rect(
-        //     Vec2::new(51., 50.),
-        //     Vec2::splat(50.),
-        //     Vec4::new(0., 1., 0., 1.),
-        // );
-        //
-        // state.canvas.fill_rect(
-        //     Vec2::new(52., 50.),
-        //     Vec2::splat(50.),
-        //     Vec4::new(0., 0., 1., 1.0),
-        // );
-
         state.canvas.fill_rect(
-            Vec2::splat(100.25),
+            Vec2::splat(100.) + Vec2::X * (time.cos() as f32) * 100.,
             Vec2::splat(500.),
             Vec4::new(1., 1., 1., 1.),
         );
