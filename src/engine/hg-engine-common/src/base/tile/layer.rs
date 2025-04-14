@@ -1,5 +1,3 @@
-// === TileLayer === //
-
 use hg_ecs::{component, Obj};
 
 use super::{TileConfig, TileMap, TilePalette};

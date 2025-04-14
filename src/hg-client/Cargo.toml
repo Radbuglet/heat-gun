@@ -10,9 +10,6 @@ cbit = "0.1.0"
 derive-where = "1.2.7"
 fastrand = "2.3.0"
 futures = "0.3.31"
-hg-common = { version = "0.1.0", path = "../hg-common" }
-hg-ecs = { version = "0.1.0", path = "../hg-ecs" }
-hg-utils = { version = "0.1.0", path = "../hg-utils" }
 macroquad = "0.4.13"
 quinn = { version = "0.11.6", features = ["futures-io", "rustls"] }
 rustls = "0.23.22"
@@ -26,5 +23,8 @@ tokio-util = { version = "0.7.13", features = ["codec"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
-[dev-dependencies]
-fastrand = "2.3.0"
+hg-common.workspace = true
+hg-ecs.workspace = true
+hg-engine-client.workspace = true
+hg-engine-common.workspace = true
+hg-utils.workspace = true

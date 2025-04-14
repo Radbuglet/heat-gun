@@ -1,6 +1,15 @@
 use std::time::Instant;
 
-use hg_common::{
+use hg_common::game::player::{
+    PlayerOwnerRpcKind, PlayerOwnerRpcSb, PlayerPuppetRpcCb, PlayerPuppetRpcKind, PlayerRpcKind,
+};
+use hg_ecs::{component, Entity, Obj, Query};
+use hg_engine_client::base::gfx::{
+    bus::register_gfx,
+    camera::{VirtualCamera, VirtualCameraSelector},
+    sprite::SolidRenderer,
+};
+use hg_engine_common::{
     base::{
         collide::{
             bus::{collide_everything, ColliderMask, ColliderMat},
@@ -9,24 +18,14 @@ use hg_common::{
         kinematic::{spawn_collision_checker, CollisionChecker, KinematicProps, Pos, Vel},
         rpc::{RpcClientHandle, RpcClientKind, RpcClientQuery},
     },
-    game::player::{
-        PlayerOwnerRpcKind, PlayerOwnerRpcSb, PlayerPuppetRpcCb, PlayerPuppetRpcKind, PlayerRpcKind,
-    },
     try_sync,
     utils::math::{Aabb, HullCastRequest, RgbaColor, Segment},
 };
-use hg_ecs::{component, Entity, Obj, Query};
 use macroquad::{
     input::{
         is_key_down, is_key_pressed, is_mouse_button_pressed, mouse_position, KeyCode, MouseButton,
     },
     math::{FloatExt, Vec2},
-};
-
-use crate::base::gfx::{
-    bus::register_gfx,
-    camera::{VirtualCamera, VirtualCameraSelector},
-    sprite::SolidRenderer,
 };
 
 use super::bullet::BulletTrailRenderer;

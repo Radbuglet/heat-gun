@@ -1,27 +1,25 @@
 use std::time::Instant;
 
-use hg_common::base::{
+use hg_ecs::{bind, Entity, World};
+use hg_engine_client::base::gfx::{
+    bus::find_gfx,
+    camera::{sys_update_virtual_cameras, VirtualCameraSelector},
+    sprite::SolidRenderer,
+    tile::TileRenderer,
+};
+use hg_engine_common::base::{
     collide::{bus::sys_flush_colliders, group::sys_update_colliders},
     debug::DebugDraw,
     kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame},
     mp::sys_update_mp_clients,
 };
-use hg_ecs::{bind, Entity, World};
 use macroquad::time::get_frame_time;
 
-use crate::{
-    base::gfx::{
-        bus::find_gfx,
-        camera::{sys_update_virtual_cameras, VirtualCameraSelector},
-        sprite::SolidRenderer,
-        tile::TileRenderer,
-    },
-    game::{
-        bullet::BulletTrailRenderer,
-        debug::sys_update_debug,
-        level::spawn_level,
-        player::{sys_update_player_camera, sys_update_players},
-    },
+use crate::game::{
+    bullet::BulletTrailRenderer,
+    debug::sys_update_debug,
+    level::spawn_level,
+    player::{sys_update_player_camera, sys_update_players},
 };
 
 pub fn world_init(world: &mut World) {

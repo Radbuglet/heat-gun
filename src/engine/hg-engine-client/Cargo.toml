@@ -1,0 +1,11 @@
+[package]
+name = "hg-engine-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+macroquad = "0.4.13"
+
+hg-ecs.workspace = true
+hg-engine-common.workspace = true
+hg-utils.workspace = true

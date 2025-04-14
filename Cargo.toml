@@ -1,12 +1,26 @@
 [workspace]
 resolver = "2"
 members = [
+    "src/engine/hg-ctx2d",
+    "src/engine/hg-ecs",
+    "src/engine/hg-engine-client",
+    "src/engine/hg-engine-common",
+    "src/engine/hg-engine-server",
+    "src/engine/hg-utils",
     "src/hg-client",
     "src/hg-common",
-    "src/hg-ctx2d",
-    "src/hg-ecs",
     "src/hg-server",
-    "src/hg-utils",
 ]
 
 exclude = ["exp"]
+
+[workspace.dependencies]
+hg-client = { path = "src/hg-client" }
+hg-common = { path = "src/hg-common" }
+hg-ctx2d = { path = "src/engine/hg-ctx2d" }
+hg-ecs = { path = "src/engine/hg-ecs" }
+hg-engine-client = { path = "src/engine/hg-engine-client" }
+hg-engine-common = { path = "src/engine/hg-engine-common" }
+hg-engine-server = { path = "src/engine/hg-engine-server" }
+hg-server = { path = "src/hg-server" }
+hg-utils = { path = "src/engine/hg-utils" }

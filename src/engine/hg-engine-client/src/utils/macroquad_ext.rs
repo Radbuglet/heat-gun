@@ -1,4 +1,4 @@
-use hg_common::utils::{
+use hg_engine_common::utils::{
     lang::Extends,
     math::{Aabb, Circle, RgbaColor, Segment},
 };

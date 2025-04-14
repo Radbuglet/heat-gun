@@ -1,5 +1,5 @@
-use hg_common::base::{mp::MpServerSession, rpc::RpcServerPeer};
 use hg_ecs::{component, Obj};
+use hg_engine_common::base::{mp::MpServerSession, rpc::RpcServerPeer};
 
 use super::PlayerReplicator;
 

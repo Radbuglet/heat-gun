@@ -1,8 +1,8 @@
-use hg_common::{
+use hg_ecs::{component, Obj};
+use hg_engine_common::{
     base::tile::{DensePaletteCache, PaletteCache as _, TileLayerSet},
     utils::math::{Aabb, RgbaColor},
 };
-use hg_ecs::{component, Obj};
 
 use crate::utils::macroquad_ext::MqAabbExt as _;
 

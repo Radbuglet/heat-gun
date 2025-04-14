@@ -1,7 +1,7 @@
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
-use crate::base::rpc::{RpcKind, RpcNodeId};
+use hg_engine_common::base::rpc::{RpcKind, RpcNodeId};
 
 // === Rpc === //
 

@@ -1,7 +1,18 @@
 use std::{net::SocketAddr, str::FromStr as _, sync::Arc};
 
 use anyhow::Context as _;
-use hg_common::{
+use hg_common::game::player::{PlayerOwnerRpcKind, PlayerPuppetRpcKind, PlayerRpcKind};
+use hg_ecs::Entity;
+use hg_engine_client::base::{
+    debug::debug_draw_macroquad,
+    gfx::{
+        bus::register_gfx,
+        camera::{CameraKeepArea, VirtualCamera, VirtualCameraSelector},
+        sprite::SolidRenderer,
+        tile::{PaletteVisuals, TileRenderer},
+    },
+};
+use hg_engine_common::{
     base::{
         collide::{
             bus::{register_collider, Collider, ColliderBus, ColliderMask, ColliderMat},
@@ -14,23 +25,11 @@ use hg_common::{
         rpc::RpcClient,
         tile::{TileConfig, TileLayer, TileLayerSet, TilePalette},
     },
-    game::player::{PlayerOwnerRpcKind, PlayerPuppetRpcKind, PlayerRpcKind},
     try_sync,
     utils::math::{Aabb, AabbI, RgbaColor},
 };
-use hg_ecs::Entity;
 use macroquad::math::Vec2;
 use quinn::crypto::rustls::QuicClientConfig;
-
-use crate::base::{
-    debug::debug_draw_macroquad,
-    gfx::{
-        bus::register_gfx,
-        camera::{CameraKeepArea, VirtualCamera, VirtualCameraSelector},
-        sprite::SolidRenderer,
-        tile::{PaletteVisuals, TileRenderer},
-    },
-};
 
 use super::bullet::BulletTrailRenderer;
 

@@ -5,17 +5,15 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use anyhow::Context as _;
 use driver::{world_init, world_tick};
-use hg_common::utils::lang::catch_termination;
 use hg_ecs::World;
+use hg_engine_common::utils::lang::catch_termination;
 use macroquad::{input::is_quit_requested, window::next_frame};
 use tokio::runtime::Runtime;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
-pub mod base;
 pub mod driver;
 pub mod game;
-pub mod utils;
 
 #[macroquad::main("Heat Gun")]
 async fn main() {

@@ -7,7 +7,6 @@ use hg_ecs::World;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
-pub mod base;
 pub mod driver;
 pub mod game;
 

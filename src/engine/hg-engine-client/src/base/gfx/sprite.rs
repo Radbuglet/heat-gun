@@ -1,8 +1,8 @@
-use hg_common::{
+use hg_ecs::{component, Obj};
+use hg_engine_common::{
     base::kinematic::Pos,
     utils::math::{Aabb, RgbaColor},
 };
-use hg_ecs::{component, Obj};
 use macroquad::math::Vec2;
 
 use crate::utils::macroquad_ext::MqAabbExt as _;

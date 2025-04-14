@@ -8,12 +8,13 @@ bytemuck = { version = "1.22.0", features = ["min_const_generics"] }
 crevice = { version = "0.18.0", features = ["glam"] }
 derive-where = "1.2.7"
 glam = "0.30.0"
-hg-utils = { version = "0.1.0", path = "../hg-utils" }
 smallbox = "0.8.6"
 smallvec = "1.14.0"
 thunderdome = "0.6.1"
 tracing = "0.1.41"
 wgpu = { version = "24.0.1", default-features = false, features = ["wgsl"] }
+
+hg-utils.workspace = true
 
 [dev-dependencies]
 anyhow = "1.0.97"
