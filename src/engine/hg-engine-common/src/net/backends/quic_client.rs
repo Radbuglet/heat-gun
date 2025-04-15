@@ -8,7 +8,7 @@ use tokio_util::codec::FramedRead;
 use tracing::{instrument, Instrument as _};
 
 use crate::{
-    base::net::{
+    net::{
         back_pressure::{BackPressureAsync, ErasedTaskGuard},
         codec::FrameDecoder,
         transport::{ClientTransport, ClientTransportEvent},

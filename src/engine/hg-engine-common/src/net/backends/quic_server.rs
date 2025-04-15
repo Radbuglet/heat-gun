@@ -17,7 +17,7 @@ use tokio_util::codec::FramedRead;
 use tracing::{instrument, Instrument};
 
 use crate::{
-    base::net::{
+    net::{
         back_pressure::{BackPressureAsync, ErasedTaskGuard},
         codec::FrameDecoder,
         transport::{PeerDisconnectError, PeerId, ServerTransport, ServerTransportEvent},

@@ -1,6 +1,6 @@
 use hg_ecs::{component, Obj};
 use hg_engine_common::{
-    base::kinematic::Pos,
+    kinematic::Pos,
     utils::math::{Aabb, RgbaColor},
 };
 use macroquad::math::Vec2;

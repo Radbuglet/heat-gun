@@ -1,6 +1,6 @@
 use hg_ecs::{component, Obj};
 use hg_engine_common::{
-    base::tile::{DensePaletteCache, PaletteCache as _, TileLayerSet},
+    tile::{DensePaletteCache, PaletteCache as _, TileLayerSet},
     utils::math::{Aabb, RgbaColor},
 };
 

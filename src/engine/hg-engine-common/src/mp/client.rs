@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use hg_ecs::{component, Obj, Query};
 
-use crate::base::{
+use crate::{
     net::{ClientTransport, ClientTransportEvent, ErasedTaskGuard, FrameEncoder},
     rpc::RpcClient,
 };

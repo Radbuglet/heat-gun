@@ -1,5 +1,5 @@
-use hg_engine_common::{base::kinematic::Pos, utils::math::Aabb};
 use hg_ecs::{component, Obj, Query};
+use hg_engine_common::{kinematic::Pos, utils::math::Aabb};
 use macroquad::{
     camera::{pop_camera_state, push_camera_state, set_camera, Camera},
     math::{Affine2, Mat4, Vec2},

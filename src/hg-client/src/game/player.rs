@@ -4,20 +4,18 @@ use hg_common::game::player::{
     PlayerOwnerRpcKind, PlayerOwnerRpcSb, PlayerPuppetRpcCb, PlayerPuppetRpcKind, PlayerRpcKind,
 };
 use hg_ecs::{component, Entity, Obj, Query};
-use hg_engine_client::base::gfx::{
+use hg_engine_client::gfx::{
     bus::register_gfx,
     camera::{VirtualCamera, VirtualCameraSelector},
     sprite::SolidRenderer,
 };
 use hg_engine_common::{
-    base::{
-        collide::{
-            bus::{collide_everything, ColliderMask, ColliderMat},
-            group::{collide_no_group, spawn_collider, ColliderGroup},
-        },
-        kinematic::{spawn_collision_checker, CollisionChecker, KinematicProps, Pos, Vel},
-        rpc::{RpcClientHandle, RpcClientKind, RpcClientQuery},
+    collide::{
+        bus::{collide_everything, ColliderMask, ColliderMat},
+        group::{collide_no_group, spawn_collider, ColliderGroup},
     },
+    kinematic::{spawn_collision_checker, CollisionChecker, KinematicProps, Pos, Vel},
+    rpc::{RpcClientHandle, RpcClientKind, RpcClientQuery},
     try_sync,
     utils::math::{Aabb, HullCastRequest, RgbaColor, Segment},
 };

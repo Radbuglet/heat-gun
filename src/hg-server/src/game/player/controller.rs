@@ -4,7 +4,7 @@ use hg_common::game::player::{
     PlayerPuppetRpcSb, PlayerRpcCatchup, PlayerRpcKind, PlayerRpcSb,
 };
 use hg_ecs::{bind, component, Entity, Obj, World};
-use hg_engine_common::base::{
+use hg_engine_common::{
     kinematic::Pos,
     mp::MpServer,
     rpc::{spawn_server_rpc, RpcNodeId, RpcServerHandle, RpcServerPeer, RpcServerReplicator},

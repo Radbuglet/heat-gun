@@ -3,7 +3,7 @@ use std::{net::SocketAddr, str::FromStr as _, sync::Arc};
 use anyhow::Context as _;
 use hg_common::game::player::{PlayerOwnerRpcKind, PlayerPuppetRpcKind, PlayerRpcKind};
 use hg_ecs::Entity;
-use hg_engine_client::base::{
+use hg_engine_client::{
     debug::debug_draw_macroquad,
     gfx::{
         bus::register_gfx,
@@ -13,18 +13,16 @@ use hg_engine_client::base::{
     },
 };
 use hg_engine_common::{
-    base::{
-        collide::{
-            bus::{register_collider, Collider, ColliderBus, ColliderMask, ColliderMat},
-            tile::{PaletteCollider, TileCollider},
-        },
-        debug::{set_debug_draw, DebugDraw},
-        kinematic::Pos,
-        mp::MpClient,
-        net::{fetch_dev_pub_cert, quic_client::QuicClientTransport},
-        rpc::RpcClient,
-        tile::{TileConfig, TileLayer, TileLayerSet, TilePalette},
+    collide::{
+        bus::{register_collider, Collider, ColliderBus, ColliderMask, ColliderMat},
+        tile::{PaletteCollider, TileCollider},
     },
+    debug::{set_debug_draw, DebugDraw},
+    kinematic::Pos,
+    mp::MpClient,
+    net::{fetch_dev_pub_cert, quic_client::QuicClientTransport},
+    rpc::RpcClient,
+    tile::{TileConfig, TileLayer, TileLayerSet, TilePalette},
     try_sync,
     utils::math::{Aabb, AabbI, RgbaColor},
 };

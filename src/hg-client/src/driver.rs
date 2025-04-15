@@ -1,13 +1,13 @@
 use std::time::Instant;
 
 use hg_ecs::{bind, Entity, World};
-use hg_engine_client::base::gfx::{
+use hg_engine_client::gfx::{
     bus::find_gfx,
     camera::{sys_update_virtual_cameras, VirtualCameraSelector},
     sprite::SolidRenderer,
     tile::TileRenderer,
 };
-use hg_engine_common::base::{
+use hg_engine_common::{
     collide::{bus::sys_flush_colliders, group::sys_update_colliders},
     debug::DebugDraw,
     kinematic::{sys_apply_kinematics, sys_kinematic_start_of_frame},

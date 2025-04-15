@@ -1,6 +1,6 @@
 use hg_ecs::{bind, component, Obj};
 
-use crate::base::tile::{DensePaletteCache, PaletteCache, TileLayerSet};
+use crate::tile::{DensePaletteCache, PaletteCache, TileLayerSet};
 
 use super::bus::{ColliderMat, CustomColliderMat};
 

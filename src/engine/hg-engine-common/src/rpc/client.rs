@@ -16,10 +16,8 @@ use hg_utils::hash::{hash_map, FxHashMap};
 use smallvec::SmallVec;
 
 use crate::{
-    base::{
-        net::{FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket},
-        rpc::RpcSbHeader,
-    },
+    net::{FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket},
+    rpc::RpcSbHeader,
     try_sync,
     utils::lang::{MultiError, NamedTypeId},
 };

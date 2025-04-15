@@ -4,7 +4,7 @@ use glam::Vec2;
 use hg_ecs::{bind, component, Entity, Obj, Query, World};
 
 use crate::{
-    base::kinematic::Pos,
+    kinematic::Pos,
     utils::math::{Aabb, HullCastRequest, HullCastResult},
 };
 

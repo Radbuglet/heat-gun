@@ -2,7 +2,7 @@ use std::{net::SocketAddr, str::FromStr as _, sync::Arc};
 
 use anyhow::Context as _;
 use hg_ecs::{bind, Entity, Obj, World};
-use hg_engine_common::base::{
+use hg_engine_common::{
     mp::MpServer,
     net::{generate_dev_priv_key, quic_server::QuicServerTransport},
     rpc::{sys_flush_rpc_groups, sys_flush_rpc_server, RpcServer},

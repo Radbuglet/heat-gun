@@ -3,7 +3,7 @@ use std::{borrow::Cow, num::NonZeroU64, u64};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{base::net::RpcPacket, utils::lang::NamedTypeId};
+use crate::{net::RpcPacket, utils::lang::NamedTypeId};
 
 // === Errors === //
 

@@ -1,5 +1,5 @@
 use hg_engine_common::{
-    base::debug::{DebugDrawBackend, ErasedBackend, ErasedRenderer},
+    debug::{DebugDrawBackend, ErasedBackend, ErasedRenderer},
     utils::math::{Aabb, Circle, LogisticCurve, RgbaColor, Segment},
 };
 use macroquad::math::Vec2;

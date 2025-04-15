@@ -18,7 +18,7 @@ use hg_ecs::{
 use hg_utils::hash::{FxHashMap, FxHashSet};
 
 use crate::{
-    base::net::{FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket},
+    net::{FrameEncoder, MultiPartDecoder, MultiPartSerializeExt as _, RpcPacket},
     utils::lang::NamedTypeId,
 };
 
